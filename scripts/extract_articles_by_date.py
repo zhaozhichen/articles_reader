@@ -128,7 +128,7 @@ def extract_category_from_url(url):
     Examples:
     - https://www.newyorker.com/books/book-currents/... -> 'books'
     - https://www.newyorker.com/culture/postscript/... -> 'culture'
-    - https://www.newyorker.com/best-books-2025 -> 'New Yorker'
+    - https://www.newyorker.com/best-books-2025 -> 'The New Yorker'
     """
     parsed = urlparse(url)
     path = parsed.path.strip('/')
@@ -141,8 +141,8 @@ def extract_category_from_url(url):
         if path.startswith(f'{category}/') or path == category:
             return category
     
-    # If no category found, return 'New Yorker'
-    return 'New Yorker'
+    # If no category found, return 'The New Yorker'
+    return 'The New Yorker'
 
 
 def extract_author_from_html(html_content):
@@ -268,6 +268,126 @@ def extract_article_body(html_content):
     return str(body_element), body_element
 
 
+def translate_html_chunked(body_html, body_element):
+    """
+    Translate long HTML content by splitting it into chunks and translating each chunk.
+    
+    Args:
+        body_html: HTML content to translate
+        body_element: BeautifulSoup element reference (for context)
+    
+    Returns:
+        Translated HTML content, or None if translation fails
+    """
+    if not GEMINI_AVAILABLE:
+        print("  Warning: google.genai not installed. Install with: pip install google-genai", file=sys.stderr)
+        return None
+    
+    api_key = os.getenv('GEMINI_API_KEY')
+    if not api_key:
+        print("  Warning: GEMINI_API_KEY not set. Skipping translation.", file=sys.stderr)
+        return None
+    
+    try:
+        client = genai.Client()
+        CHUNK_SIZE = 400000  # Characters per chunk (leave room for prompt)
+        
+        # Parse HTML to split intelligently by elements
+        soup = BeautifulSoup(body_html, 'html.parser')
+        
+        # Get all top-level elements
+        elements = list(soup.children)
+        chunks = []
+        current_chunk = []
+        current_size = 0
+        
+        for elem in elements:
+            elem_str = str(elem)
+            elem_size = len(elem_str)
+            
+            # If adding this element would exceed chunk size, start a new chunk
+            if current_size + elem_size > CHUNK_SIZE and current_chunk:
+                chunks.append(''.join(current_chunk))
+                current_chunk = [elem_str]
+                current_size = elem_size
+            else:
+                current_chunk.append(elem_str)
+                current_size += elem_size
+        
+        # Add the last chunk
+        if current_chunk:
+            chunks.append(''.join(current_chunk))
+        
+        print(f"    Split article into {len(chunks)} chunks for translation", file=sys.stderr)
+        
+        # Translate each chunk
+        translated_chunks = []
+        for i, chunk in enumerate(chunks):
+            print(f"    Translating chunk {i+1}/{len(chunks)} (size: {len(chunk)} chars)...", file=sys.stderr)
+            
+            prompt = f"""请将以下HTML内容翻译成简体中文。
+
+翻译要求：
+1. 只翻译文本内容，保留所有HTML标签、属性和结构完全不变
+2. 保持所有图片URL、资源路径和链接不变
+3. 保持所有CSS类、ID和数据属性不变
+4. 不翻译代码、URL或技术属性
+5. 保持HTML结构和格式完全不变
+6. 返回完整的翻译后的HTML
+
+HTML内容：
+{chunk}"""
+            
+            try:
+                response = client.models.generate_content(
+                    model="gemini-3-pro-preview",
+                    contents=prompt
+                )
+                
+                # Extract translated text
+                translated_chunk = None
+                if hasattr(response, 'text') and response.text:
+                    translated_chunk = response.text
+                elif hasattr(response, 'candidates') and len(response.candidates) > 0:
+                    candidate = response.candidates[0]
+                    if hasattr(candidate, 'content'):
+                        if hasattr(candidate.content, 'parts') and len(candidate.content.parts) > 0:
+                            translated_chunk = candidate.content.parts[0].text
+                        elif hasattr(candidate.content, 'text'):
+                            translated_chunk = candidate.content.text
+                
+                if translated_chunk:
+                    # Clean markdown formatting if present
+                    if translated_chunk.startswith('```html'):
+                        translated_chunk = translated_chunk[7:]
+                    elif translated_chunk.startswith('```'):
+                        translated_chunk = translated_chunk[3:]
+                    if translated_chunk.endswith('```'):
+                        translated_chunk = translated_chunk[:-3]
+                    translated_chunk = translated_chunk.strip()
+                    translated_chunks.append(translated_chunk)
+                    print(f"    Chunk {i+1} translated successfully", file=sys.stderr)
+                else:
+                    print(f"    Warning: Chunk {i+1} translation returned empty result", file=sys.stderr)
+                    # Use original chunk as fallback
+                    translated_chunks.append(chunk)
+            except Exception as e:
+                print(f"    Error translating chunk {i+1}: {e}", file=sys.stderr)
+                # Use original chunk as fallback
+                translated_chunks.append(chunk)
+        
+        # Combine all translated chunks
+        translated_html = ''.join(translated_chunks)
+        print(f"    Combined translation complete (size: {len(translated_html)} chars)", file=sys.stderr)
+        return translated_html
+        
+    except Exception as e:
+        print(f"  Error in chunked translation: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        return None
+
+
 def translate_html_with_gemini(html_content, api_key=None):
     """Translate only the article body content to Simplified Chinese using Gemini 3 Pro.
     
@@ -305,10 +425,12 @@ def translate_html_with_gemini(html_content, api_key=None):
         body_size = len(body_html)
         print(f"    Found article body (size: {body_size} chars)", file=sys.stderr)
         
+        # Maximum size for single translation (increased to 500K)
+        MAX_SINGLE_TRANSLATION = 500000
+        
         # Check if body is too long to translate
-        if body_size > 100000:
-            print(f"    Article body is too long ({body_size} chars), skipping translation", file=sys.stderr)
-            # Create a placeholder HTML with the message
+        if body_size > MAX_SINGLE_TRANSLATION:
+            print(f"    Article body is too long ({body_size:,} chars), skipping translation and showing placeholder", file=sys.stderr)
             soup = BeautifulSoup(html_content, 'html.parser')
             
             # Find the body element to replace
@@ -323,8 +445,8 @@ def translate_html_with_gemini(html_content, api_key=None):
                     break
             
             if original_body:
-                # Create placeholder message
-                placeholder_html = f'<div style="padding: 2rem; text-align: center; font-family: Arial, sans-serif;"><p style="font-size: 18px; color: #666;">The original article is too long to translate, {body_size:,} chars</p><p style="font-size: 14px; color: #999; margin-top: 1rem;">原文过长，无法翻译，共 {body_size:,} 字符</p></div>'
+                # Create placeholder message with size information
+                placeholder_html = f'<div style="padding: 2rem; text-align: center; font-family: Arial, sans-serif;"><p style="font-size: 18px; color: #666;">文章过长，无法翻译</p><p style="font-size: 14px; color: #999; margin-top: 1rem;">Article too long to translate, size: {body_size:,} characters</p></div>'
                 placeholder_soup = BeautifulSoup(placeholder_html, 'html.parser')
                 
                 # Replace body content with placeholder
@@ -584,7 +706,7 @@ def save_article_html(url, target_date=None, output_dir='.', translate=False, ge
             "date": date_str,
             "category": category,
             "author": author,
-            "source": "New Yorker",  # Fixed value, can be extended in the future
+            "source": "The New Yorker",  # Fixed value, can be extended in the future
             "title": title,
             "url": url,
             "original_file": filename,

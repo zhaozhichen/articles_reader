@@ -10,7 +10,7 @@ class ArticleBase(BaseModel):
     date: datetime
     category: str
     author: str
-    source: str = "New Yorker"
+    source: str = "The New Yorker"
     original_url: str
 
 class ArticleCreate(ArticleBase):

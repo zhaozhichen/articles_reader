@@ -138,10 +138,10 @@ def import_from_subdirs_inline(en_dir, zh_dir):
                 existing.title = title_en
                 existing.title_zh = title_zh
                 existing.date = parsed['date']
-                # Convert 'na' category to 'New Yorker'
+                # Convert 'na' category to 'The New Yorker'
                 category = parsed['category']
                 if category == 'na':
-                    category = 'New Yorker'
+                    category = 'The New Yorker'
                 existing.category = category
                 existing.author = author
                 existing.html_file_en = en_path
@@ -151,17 +151,17 @@ def import_from_subdirs_inline(en_dir, zh_dir):
                     existing.original_url = url
                 updated_count += 1
             else:
-                # Convert 'na' category to 'New Yorker'
+                # Convert 'na' category to 'The New Yorker'
                 category = parsed['category']
                 if category == 'na':
-                    category = 'New Yorker'
+                    category = 'The New Yorker'
                 article = Article(
                     title=title_en,
                     title_zh=title_zh,
                     date=parsed['date'],
                     category=category,
                     author=author,
-                    source="New Yorker",
+                    source="The New Yorker",
                     original_url=url,
                     html_file_en=en_path,
                     html_file_zh=zh_path
@@ -243,9 +243,9 @@ def import_articles_from_directory(directory: Path) -> int:
                     # Update existing article
                     existing.title = metadata.get('title', 'untitled')
                     existing.date = article_date
-                    existing.category = metadata.get('category', 'New Yorker')
+                    existing.category = metadata.get('category', 'The New Yorker')
                     existing.author = metadata.get('author', 'unknown')
-                    existing.source = metadata.get('source', 'New Yorker')
+                    existing.source = metadata.get('source', 'The New Yorker')
                     existing.html_file_en = metadata.get('original_file', '')
                     existing.html_file_zh = metadata.get('translated_file')
                     existing.updated_at = datetime.utcnow()
@@ -255,9 +255,9 @@ def import_articles_from_directory(directory: Path) -> int:
                     article = Article(
                         title=metadata.get('title', 'untitled'),
                         date=article_date,
-                        category=metadata.get('category', 'New Yorker'),
+                        category=metadata.get('category', 'The New Yorker'),
                         author=metadata.get('author', 'unknown'),
-                        source=metadata.get('source', 'New Yorker'),
+                        source=metadata.get('source', 'The New Yorker'),
                         original_url=metadata.get('url', ''),
                         html_file_en=metadata.get('original_file', ''),
                         html_file_zh=metadata.get('translated_file')

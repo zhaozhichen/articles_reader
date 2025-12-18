@@ -258,6 +258,77 @@ async def get_filter_options(
 class AddArticleRequest(BaseModel):
     url: str
 
+@router.delete("/{article_id}")
+async def delete_article(
+    article_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Delete an article by ID.
+    Deletes both the database record and the associated HTML files.
+    """
+    try:
+        article = db.query(Article).filter(Article.id == article_id).first()
+        if not article:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Article not found"
+            )
+        
+        # Get file paths
+        en_file = None
+        zh_file = None
+        
+        if article.html_file_en:
+            en_path = Path(article.html_file_en)
+            if en_path.parts[0] == 'en':
+                filename = en_path.name
+                en_file = HTML_DIR_EN / filename
+            else:
+                en_file = HTML_DIR_EN / en_path.name
+        
+        if article.html_file_zh:
+            zh_path = Path(article.html_file_zh)
+            if zh_path.parts[0] == 'zh':
+                filename = zh_path.name
+                zh_file = HTML_DIR_ZH / filename
+            else:
+                zh_file = HTML_DIR_ZH / zh_path.name
+        
+        # Delete files
+        deleted_files = []
+        if en_file and en_file.exists():
+            en_file.unlink()
+            deleted_files.append(str(en_file))
+            logger.info(f"Deleted EN file: {en_file}")
+        
+        if zh_file and zh_file.exists():
+            zh_file.unlink()
+            deleted_files.append(str(zh_file))
+            logger.info(f"Deleted ZH file: {zh_file}")
+        
+        # Delete database record
+        article_title = article.title
+        db.delete(article)
+        db.commit()
+        
+        logger.info(f"Deleted article: {article_title} (ID: {article_id})")
+        
+        return {
+            "message": "Article deleted successfully",
+            "deleted_files": deleted_files
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting article: {str(e)}", exc_info=True)
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error deleting article: {str(e)}"
+        )
+
 @router.post("/add-from-url")
 async def add_article_from_url(
     request: AddArticleRequest,

@@ -230,7 +230,7 @@ def import_articles_from_directory(directory):
                 existing.date = parsed['date']
                 existing.category = parsed['category']
                 existing.author = author
-                existing.source = "New Yorker"
+                existing.source = "The New Yorker"
                 existing.html_file_en = en_data['path']
                 existing.html_file_zh = zh_path
                 existing.updated_at = datetime.utcnow()
@@ -246,7 +246,7 @@ def import_articles_from_directory(directory):
                     date=parsed['date'],
                     category=parsed['category'],
                     author=author,
-                    source="New Yorker",
+                    source="The New Yorker",
                     original_url=url,
                     html_file_en=en_data['path'],
                     html_file_zh=zh_path
