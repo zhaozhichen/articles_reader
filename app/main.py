@@ -14,9 +14,28 @@ from app.services.scheduler import start_scheduler, stop_scheduler
 # Configure logging
 from app.config import LOG_DIR
 import logging.handlers
+import pytz
+from datetime import datetime
 
 # Create logs directory if it doesn't exist
 LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+# Custom formatter that converts time to EST
+class ESTFormatter(logging.Formatter):
+    """Formatter that converts time to Eastern Time."""
+    def __init__(self, fmt=None, datefmt=None):
+        super().__init__(fmt, datefmt)
+        self.eastern = pytz.timezone('America/New_York')
+    
+    def formatTime(self, record, datefmt=None):
+        """Format time in EST timezone."""
+        ct = datetime.fromtimestamp(record.created, tz=self.eastern)
+        if datefmt:
+            s = ct.strftime(datefmt)
+        else:
+            t = ct.strftime("%Y-%m-%d %H:%M:%S")
+            s = f"{t} EST"
+        return s
 
 # Configure root logger with both file and console handlers
 root_logger = logging.getLogger()
@@ -34,13 +53,13 @@ if not root_logger.handlers:
         encoding='utf-8'
     )
     file_handler.setLevel(logging.INFO)
-    file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    file_formatter = ESTFormatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     file_handler.setFormatter(file_formatter)
 
     # Console handler
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
-    console_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    console_formatter = ESTFormatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     console_handler.setFormatter(console_formatter)
 
     # Add handlers
