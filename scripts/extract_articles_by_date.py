@@ -15,6 +15,8 @@ import json
 import sys
 import os
 import argparse
+import time
+import random
 from datetime import datetime
 from urllib.parse import urljoin, urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -36,7 +38,7 @@ except ImportError:
 
 
 def fetch_page(url, max_retries=3):
-    """Fetch a page with retries."""
+    """Fetch a page with retries and random delays to reduce IP ban risk."""
     headers = {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
     }
@@ -44,11 +46,21 @@ def fetch_page(url, max_retries=3):
         try:
             response = requests.get(url, headers=headers, timeout=30)
             response.raise_for_status()
+            
+            # Random delay after successful request (3-7 seconds) to reduce IP ban risk
+            delay = random.uniform(3, 7)
+            print(f"    Waiting {delay:.1f}s before next request...", file=sys.stderr)
+            time.sleep(delay)
+            
             return response.text
         except requests.RequestException as e:
             if attempt == max_retries - 1:
                 print(f"Error fetching {url}: {e}", file=sys.stderr)
                 return None
+            # Wait before retry
+            delay = random.uniform(3, 7)
+            print(f"    Retry after {delay:.1f}s...", file=sys.stderr)
+            time.sleep(delay)
             continue
     return None
 
@@ -982,6 +994,12 @@ def main():
                 print(f"    Saved to: {original_path}", file=sys.stderr)
             if translated_path:
                 translated_files.append(translated_path)
+            
+            # Add delay between articles (except for the last one)
+            if i < len(matching_urls):
+                delay = random.uniform(3, 7)
+                print(f"    Waiting {delay:.1f}s before next article...", file=sys.stderr)
+                time.sleep(delay)
         
         print(f"\nSuccessfully saved {len(saved_files)} articles to {args.output_dir}", file=sys.stderr)
         if args.translate and translated_files:
