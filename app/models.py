@@ -14,7 +14,7 @@ class Article(Base):
     date = Column(DateTime, nullable=False, index=True)  # Publication date
     category = Column(String, nullable=False, index=True)
     author = Column(String, nullable=False, index=True)
-    source = Column(String, nullable=False, default="new yorker", index=True)
+    source = Column(String, nullable=False, default="New Yorker", index=True)
     original_url = Column(String, nullable=False, unique=True)
     html_file_en = Column(String, nullable=False)  # Path to English HTML file
     html_file_zh = Column(String, nullable=True)  # Path to Chinese HTML file (optional)

@@ -128,7 +128,7 @@ def extract_category_from_url(url):
     Examples:
     - https://www.newyorker.com/books/book-currents/... -> 'books'
     - https://www.newyorker.com/culture/postscript/... -> 'culture'
-    - https://www.newyorker.com/best-books-2025 -> 'na'
+    - https://www.newyorker.com/best-books-2025 -> 'New Yorker'
     """
     parsed = urlparse(url)
     path = parsed.path.strip('/')
@@ -141,8 +141,8 @@ def extract_category_from_url(url):
         if path.startswith(f'{category}/') or path == category:
             return category
     
-    # If no category found, return 'na'
-    return 'na'
+    # If no category found, return 'New Yorker'
+    return 'New Yorker'
 
 
 def extract_author_from_html(html_content):
@@ -584,7 +584,7 @@ def save_article_html(url, target_date=None, output_dir='.', translate=False, ge
             "date": date_str,
             "category": category,
             "author": author,
-            "source": "new yorker",  # Fixed value, can be extended in the future
+            "source": "New Yorker",  # Fixed value, can be extended in the future
             "title": title,
             "url": url,
             "original_file": filename,

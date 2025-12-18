@@ -156,7 +156,7 @@ def import_articles_from_subdirs():
                 existing.date = parsed['date']
                 existing.category = parsed['category']
                 existing.author = author
-                existing.source = "new yorker"
+                existing.source = "New Yorker"
                 existing.html_file_en = en_path
                 existing.html_file_zh = zh_path
                 existing.updated_at = datetime.utcnow()
@@ -172,7 +172,7 @@ def import_articles_from_subdirs():
                     date=parsed['date'],
                     category=parsed['category'],
                     author=author,
-                    source="new yorker",
+                    source="New Yorker",
                     original_url=url,
                     html_file_en=en_path,
                     html_file_zh=zh_path

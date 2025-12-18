@@ -128,7 +128,7 @@ try:
                 date=parsed['date'],
                 category=parsed['category'],
                 author=author,
-                source='new yorker',
+                source='New Yorker',
                 original_url=url,
                 html_file_en=en_data['path'],
                 html_file_zh=zh_path
