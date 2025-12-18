@@ -85,19 +85,19 @@ async def run_daily_scrape():
         logger.error(f"Error running daily scrape: {str(e)}", exc_info=True)
 
 def start_scheduler():
-    """Start the scheduler with daily job at 11 PM Eastern Time."""
-    # Schedule daily job at 11:00 PM Eastern Time
+    """Start the scheduler with daily job at 7 PM Eastern Time."""
+    # Schedule daily job at 7:00 PM Eastern Time
     eastern = pytz.timezone('America/New_York')
     scheduler.add_job(
         run_daily_scrape,
-        trigger=CronTrigger(hour=23, minute=0, timezone=eastern),
+        trigger=CronTrigger(hour=19, minute=0, timezone=eastern),
         id='daily_scrape',
         name='Daily article scrape',
         replace_existing=True
     )
     
     scheduler.start()
-    logger.info("Scheduler started. Daily scrape scheduled for 11:00 PM Eastern Time")
+    logger.info("Scheduler started. Daily scrape scheduled for 7:00 PM Eastern Time")
 
 def stop_scheduler():
     """Stop the scheduler."""
