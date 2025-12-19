@@ -90,7 +90,7 @@ def extract_metadata_from_html_for_import(html_path, prefer_h1=False):
             h1 = soup.find('h1')
             if h1:
                 title = h1.get_text().strip()
-                if title and len(title) > 5:  # Valid title
+                if title and len(title) >= 1:  # Valid title (allow short Chinese titles)
                     metadata['title'] = title
         
         # Fallback to meta tags if h1 not found or not preferred
