@@ -312,6 +312,13 @@ async def delete_article(
             en_file.unlink()
             deleted_files.append(str(en_file))
             logger.info(f"Deleted EN file: {en_file}")
+            
+            # Delete corresponding JSON metadata file
+            json_file = en_file.with_suffix('.json')
+            if json_file.exists():
+                json_file.unlink()
+                deleted_files.append(str(json_file))
+                logger.info(f"Deleted JSON file: {json_file}")
         
         if zh_file and zh_file.exists():
             zh_file.unlink()

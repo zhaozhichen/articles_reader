@@ -170,12 +170,28 @@ def import_from_subdirs_inline(en_dir, zh_dir):
             
             if existing:
                 existing.title = title_en
-                existing.title_zh = title_zh
+                # Update title_zh if we have a valid Chinese title
+                # If zh_file exists but extraction failed (title_zh is None), preserve existing title_zh
+                # If zh_file doesn't exist, preserve existing title_zh
+                # Only update if we successfully extracted a Chinese title
+                if title_zh:
+                    existing.title_zh = title_zh
+                # If zh_file exists but we couldn't extract title, and existing title_zh is None,
+                # try fallback extraction (without prefer_h1) as last resort
+                elif zh_file.exists() and existing.title_zh is None:
+                    # Try fallback extraction
+                    zh_metadata_fallback = extract_metadata_from_html_for_import(zh_file, prefer_h1=False)
+                    title_zh_fallback = zh_metadata_fallback.get('title')
+                    if title_zh_fallback and title_zh_fallback != title_en:
+                        # Only use fallback if it's different from English title (likely translated)
+                        existing.title_zh = title_zh_fallback
                 existing.date = parsed['date']
                 existing.category = category
                 existing.author = author
                 existing.html_file_en = en_path
-                existing.html_file_zh = zh_path
+                # Only update html_file_zh if Chinese file exists
+                if zh_path:
+                    existing.html_file_zh = zh_path
                 existing.updated_at = datetime.utcnow()
                 if url and not existing.original_url:
                     existing.original_url = url
