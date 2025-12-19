@@ -4,6 +4,7 @@ import json
 import re
 from pathlib import Path
 from datetime import datetime
+from urllib.parse import urlparse
 from sqlalchemy.orm import Session
 from bs4 import BeautifulSoup
 from app.database import SessionLocal
@@ -11,6 +12,29 @@ from app.models import Article
 from app.config import HTML_DIR_EN, HTML_DIR_ZH
 
 logger = logging.getLogger(__name__)
+
+def extract_category_from_url(url):
+    """Extract category from URL path.
+    
+    Examples:
+    - https://www.newyorker.com/books/book-currents/... -> 'books'
+    - https://www.newyorker.com/culture/postscript/... -> 'culture'
+    - https://www.newyorker.com/podcast/critics-at-large/... -> 'podcast'
+    - https://www.newyorker.com/best-books-2025 -> 'The New Yorker'
+    """
+    parsed = urlparse(url)
+    path = parsed.path.strip('/')
+    
+    # Common categories to look for
+    categories = ['news', 'books', 'culture', 'magazine', 'humor', 'cartoons', 
+                  'puzzles-and-games-dept', 'newsletter', 'video', 'podcast', 'podcasts']
+    
+    for category in categories:
+        if path.startswith(f'{category}/') or path == category:
+            return category
+    
+    # If no category found, return 'The New Yorker'
+    return 'The New Yorker'
 
 def parse_filename_for_import(filename):
     """Parse metadata from filename."""
@@ -127,6 +151,16 @@ def import_from_subdirs_inline(en_dir, zh_dir):
             
             en_path = f"en/{en_file.name}"
             
+            # Extract category from URL if available, otherwise use filename
+            if url:
+                category = extract_category_from_url(url)
+            else:
+                category = parsed['category']
+            
+            # Convert 'na' category to 'The New Yorker'
+            if category == 'na':
+                category = 'The New Yorker'
+            
             existing = None
             if url:
                 existing = db.query(Article).filter(Article.original_url == url).first()
@@ -138,10 +172,6 @@ def import_from_subdirs_inline(en_dir, zh_dir):
                 existing.title = title_en
                 existing.title_zh = title_zh
                 existing.date = parsed['date']
-                # Convert 'na' category to 'The New Yorker'
-                category = parsed['category']
-                if category == 'na':
-                    category = 'The New Yorker'
                 existing.category = category
                 existing.author = author
                 existing.html_file_en = en_path
@@ -151,10 +181,6 @@ def import_from_subdirs_inline(en_dir, zh_dir):
                     existing.original_url = url
                 updated_count += 1
             else:
-                # Convert 'na' category to 'The New Yorker'
-                category = parsed['category']
-                if category == 'na':
-                    category = 'The New Yorker'
                 article = Article(
                     title=title_en,
                     title_zh=title_zh,

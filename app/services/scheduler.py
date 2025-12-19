@@ -56,31 +56,51 @@ async def run_daily_scrape():
         
         logger.info(f"Running command: {' '.join(cmd)}")
         
-        # Run the script
-        result = subprocess.run(
+        # Run the script asynchronously to avoid blocking the event loop
+        result = await asyncio.to_thread(
+            subprocess.run,
             cmd,
             cwd=str(BASE_DIR),
             env=env,
             capture_output=True,
             text=True,
-            timeout=3600  # 1 hour timeout
+            timeout=18000  # 5 hours timeout
         )
         
         if result.returncode == 0:
             logger.info(f"Scraping completed successfully for {date_str}")
             logger.info(f"Script output: {result.stdout}")
-            
-            # Import articles into database
-            logger.info("Importing articles into database...")
-            # Run in thread pool to avoid blocking
-            import_count = await asyncio.to_thread(import_articles_from_directory, HTML_DIR_EN)
-            logger.info(f"Imported {import_count} articles into database")
         else:
             logger.error(f"Scraping failed for {date_str}")
             logger.error(f"Error output: {result.stderr}")
+            logger.warning("Script failed, but will still attempt to import any articles that were saved")
+        
+        # Import articles into database regardless of script exit code
+        # This ensures articles are imported even if script was interrupted
+        logger.info("Importing articles into database (initial import)...")
+        try:
+            # Run in thread pool to avoid blocking
+            import_count = await asyncio.to_thread(import_articles_from_directory, HTML_DIR_EN)
+            logger.info(f"Imported {import_count} articles into database")
+        except Exception as e:
+            logger.error(f"Error importing articles: {str(e)}", exc_info=True)
+        
+        # If translation was enabled, re-import after a short delay to pick up any translations
+        # that completed after the initial import
+        if '--translate' in cmd:
+            logger.info("Translation was enabled, waiting 30 seconds then re-importing to update translation paths...")
+            await asyncio.sleep(30)  # Wait for any in-progress translations to complete
+            
+            logger.info("Re-importing articles to update translation paths...")
+            try:
+                # Run in thread pool to avoid blocking
+                import_count = await asyncio.to_thread(import_articles_from_directory, HTML_DIR_EN)
+                logger.info(f"Re-imported {import_count} articles (updated translation paths)")
+            except Exception as e:
+                logger.error(f"Error re-importing articles: {str(e)}", exc_info=True)
             
     except subprocess.TimeoutExpired:
-        logger.error("Scraping script timed out after 1 hour")
+        logger.error("Scraping script timed out after 5 hours")
     except Exception as e:
         logger.error(f"Error running daily scrape: {str(e)}", exc_info=True)
 

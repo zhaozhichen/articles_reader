@@ -175,6 +175,17 @@ async def get_article_html(
                 # Use the same filename from en file in zh subdirectory
                 filename = Path(article.html_file_en).name
                 file_path = HTML_DIR_ZH / filename
+            
+            # If Chinese file doesn't exist, fallback to English version
+            if not file_path.exists():
+                logger.warning(f"Chinese version not found for {article.id}, falling back to English")
+                # Fallback to English version
+                en_path = Path(article.html_file_en)
+                if en_path.parts[0] == 'en':
+                    filename = en_path.name
+                    file_path = HTML_DIR_EN / filename
+                else:
+                    file_path = HTML_DIR_EN / en_path.name
         else:
             # Use en subdirectory
             en_path = Path(article.html_file_en)

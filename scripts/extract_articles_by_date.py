@@ -146,8 +146,8 @@ def extract_category_from_url(url):
     path = parsed.path.strip('/')
     
     # Common categories to look for
-    categories = ['news', 'books', 'culture', 'magazine', 'humor', 'cartoons', 
-                  'puzzles-and-games-dept', 'newsletter', 'video', 'podcasts']
+    categories = ['news', 'books', 'culture', 'magazine', 'humor', 'cartoons', 'archive', 'crossword-puzzles-and-games', 'goings-on', 
+                  'puzzles-and-games-dept', 'newsletter', 'video', 'fiction-and-poetry', 'podcasts', 'podcast']
     
     for category in categories:
         if path.startswith(f'{category}/') or path == category:
@@ -278,6 +278,37 @@ def extract_article_body(html_content):
             return None, None
     
     return str(body_element), body_element
+
+
+def translate_html_with_gemini_retry(html_content, api_key=None, max_retries=2):
+    """Translate HTML with retry mechanism.
+    
+    Args:
+        html_content: Original HTML content
+        api_key: Gemini API key (if None, uses GEMINI_API_KEY env var)
+        max_retries: Maximum number of retries (default: 2, total attempts: 3)
+    
+    Returns:
+        Translated HTML content, or None if all attempts fail
+    """
+    for attempt in range(max_retries + 1):  # 0, 1, 2 = 3 attempts total
+        if attempt > 0:
+            delay = random.uniform(5, 15)  # Wait 5-15 seconds before retry
+            print(f"    Retry attempt {attempt}/{max_retries} after {delay:.1f}s delay...", file=sys.stderr)
+            time.sleep(delay)
+        
+        result = translate_html_with_gemini(html_content, api_key)
+        if result is not None:
+            if attempt > 0:
+                print(f"    Translation succeeded on attempt {attempt + 1}", file=sys.stderr)
+            return result
+        else:
+            if attempt < max_retries:
+                print(f"    Translation failed on attempt {attempt + 1}/{max_retries + 1}, will retry...", file=sys.stderr)
+            else:
+                print(f"    Translation failed after {max_retries + 1} attempts, giving up", file=sys.stderr)
+    
+    return None
 
 
 def translate_html_with_gemini(html_content, api_key=None):
@@ -561,10 +592,10 @@ def save_article_html(url, target_date=None, output_dir='.', translate=False, ge
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(html)
         
-        # Translate if requested
+        # Translate if requested (with retry mechanism)
         if translate:
             print(f"    Translating to Simplified Chinese...", file=sys.stderr)
-            translated_html = translate_html_with_gemini(html, gemini_api_key)
+            translated_html = translate_html_with_gemini_retry(html, gemini_api_key, max_retries=2)
             if translated_html:
                 # If zh_dir is specified, save to that directory with same filename
                 # Otherwise, use zh_ prefix in same directory (backward compatibility)
@@ -851,35 +882,146 @@ def main():
     
     # Save HTML files for each matching article
     if matching_urls:
-        print(f"\nSaving HTML files for {len(matching_urls)} articles...", file=sys.stderr)
-        if args.translate:
-            print(f"Translation enabled: Will create Simplified Chinese versions", file=sys.stderr)
+        print(f"\nFound {len(matching_urls)} articles published on {target_date}", file=sys.stderr)
+        
+        # Step 1: Download all English articles first
+        print(f"\nStep 1: Downloading {len(matching_urls)} English articles...", file=sys.stderr)
         saved_files = []
-        translated_files = []
+        failed_urls = []
+        skipped_files = []
         for i, url in enumerate(matching_urls, 1):
-            print(f"  [{i}/{len(matching_urls)}] Saving {url}...", file=sys.stderr)
-            original_path, translated_path = save_article_html(
+            print(f"  [{i}/{len(matching_urls)}] Processing {url}...", file=sys.stderr)
+            
+            # Check if file already exists by fetching metadata first
+            # We need to get the article to determine the filename
+            html = fetch_page(url)
+            if not html:
+                failed_urls.append(url)
+                print(f"    Failed to fetch HTML", file=sys.stderr)
+                continue
+            
+            # Extract metadata to determine filename
+            author = extract_author_from_html(html)
+            title = extract_title_from_html(html)
+            category = extract_category_from_url(url)
+            
+            # Build expected filename
+            category_safe = sanitize_filename(category)
+            author_safe = sanitize_filename(author)
+            title_safe = sanitize_filename(title)
+            date_str = target_date.strftime('%Y-%m-%d')
+            filename = f"{date_str}_{category_safe}_{author_safe}_{title_safe}.html"
+            expected_filepath = os.path.join(args.output_dir, filename)
+            
+            # Check if file already exists
+            if os.path.exists(expected_filepath):
+                print(f"    File already exists, skipping download: {filename}", file=sys.stderr)
+                skipped_files.append(expected_filepath)
+                saved_files.append(expected_filepath)  # Still add to saved_files for translation step
+                continue
+            
+            # File doesn't exist, proceed with download
+            print(f"    Downloading...", file=sys.stderr)
+            original_path, _ = save_article_html(
                 url, target_date, args.output_dir, 
-                translate=args.translate,
+                translate=False,  # Don't translate yet
                 gemini_api_key=args.gemini_api_key,
                 zh_dir=args.zh_dir
             )
             if original_path:
                 saved_files.append(original_path)
                 print(f"    Saved to: {original_path}", file=sys.stderr)
-            if translated_path:
-                translated_files.append(translated_path)
+            else:
+                failed_urls.append(url)
+                print(f"    Failed to save", file=sys.stderr)
             
-            # Add delay between articles (except for the last one)
+            # Add delay between downloads (except for the last one)
             if i < len(matching_urls):
                 delay = random.uniform(3, 7)
-                print(f"    Waiting {delay:.1f}s before next article...", file=sys.stderr)
+                print(f"    Waiting {delay:.1f}s before next download...", file=sys.stderr)
                 time.sleep(delay)
         
-        print(f"\nSuccessfully saved {len(saved_files)} articles to {args.output_dir}", file=sys.stderr)
-        if args.translate and translated_files:
-            print(f"Successfully translated {len(translated_files)} articles to Simplified Chinese", file=sys.stderr)
-        print(f"\nFound {len(matching_urls)} articles published on {target_date}:", file=sys.stderr)
+        print(f"\nStep 1 complete: Successfully downloaded {len(saved_files)} articles", file=sys.stderr)
+        if failed_urls:
+            print(f"  Failed to download {len(failed_urls)} articles", file=sys.stderr)
+        if skipped_files:
+            print(f"  Skipped {len(skipped_files)} articles (already exist)", file=sys.stderr)
+        
+        # Step 2: Translate all downloaded articles
+        translated_files = []
+        skipped_translations = []
+        if args.translate and saved_files:
+            print(f"\nStep 2: Translating {len(saved_files)} articles to Simplified Chinese...", file=sys.stderr)
+            for i, filepath in enumerate(saved_files, 1):
+                # Extract filename from path
+                filename = os.path.basename(filepath)
+                print(f"  [{i}/{len(saved_files)}] Translating {filename}...", file=sys.stderr)
+                
+                # Check if translation already exists
+                if args.zh_dir:
+                    translated_filepath = os.path.join(args.zh_dir, filename)
+                else:
+                    translated_filename = f"zh_{filename}"
+                    translated_filepath = os.path.join(args.output_dir, translated_filename)
+                
+                if os.path.exists(translated_filepath):
+                    print(f"    Translation already exists, skipping: {translated_filepath}", file=sys.stderr)
+                    skipped_translations.append(translated_filepath)
+                    # Still add to translated_files for summary
+                    translated_files.append(translated_filepath)
+                    continue
+                
+                # Read the English HTML
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        html = f.read()
+                    
+                    # Translate with retry mechanism (max 2 retries = 3 total attempts)
+                    translated_html = translate_html_with_gemini_retry(html, args.gemini_api_key, max_retries=2)
+                    if translated_html:
+                        # Save translated version
+                        if args.zh_dir:
+                            os.makedirs(args.zh_dir, exist_ok=True)
+                            translated_file_rel = os.path.relpath(translated_filepath, args.output_dir)
+                        else:
+                            translated_file_rel = translated_filename
+                        
+                        with open(translated_filepath, 'w', encoding='utf-8') as f:
+                            f.write(translated_html)
+                        translated_files.append(translated_filepath)
+                        print(f"    Saved translation to: {translated_filepath}", file=sys.stderr)
+                        
+                        # Update metadata JSON file to include translated file path
+                        metadata_filepath = filepath.replace('.html', '.json')
+                        if os.path.exists(metadata_filepath):
+                            try:
+                                with open(metadata_filepath, 'r', encoding='utf-8') as f:
+                                    metadata = json.load(f)
+                                metadata['translated_file'] = translated_file_rel
+                                with open(metadata_filepath, 'w', encoding='utf-8') as f:
+                                    json.dump(metadata, f, ensure_ascii=False, indent=2)
+                            except Exception as e:
+                                print(f"    Warning: Could not update metadata file: {e}", file=sys.stderr)
+                    else:
+                        print(f"    Translation failed, skipping", file=sys.stderr)
+                except Exception as e:
+                    print(f"    Error translating {filename}: {e}", file=sys.stderr)
+                
+                # Add delay between translations (except for the last one)
+                if i < len(saved_files):
+                    delay = random.uniform(3, 7)
+                    print(f"    Waiting {delay:.1f}s before next translation...", file=sys.stderr)
+                    time.sleep(delay)
+            
+            print(f"\nStep 2 complete: Successfully translated {len(translated_files)} articles", file=sys.stderr)
+            if skipped_translations:
+                print(f"  Skipped {len(skipped_translations)} translations (already exist)", file=sys.stderr)
+        
+        print(f"\nSummary:", file=sys.stderr)
+        print(f"  Downloaded: {len(saved_files)} articles", file=sys.stderr)
+        if args.translate:
+            print(f"  Translated: {len(translated_files)} articles", file=sys.stderr)
+        print(f"\nAll articles published on {target_date}:", file=sys.stderr)
         for url in matching_urls:
             print(url)
     else:
