@@ -58,6 +58,11 @@
             font-size: 14px;
             font-weight: 600;
             transition: all 0.2s;
+            height: 36px;
+            line-height: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
 
         .language-toggle button.active {
@@ -362,6 +367,14 @@
             line-height: 1.4;
             flex: 1;
             margin-right: 10px;
+            /* Limit title to 3 lines with ellipsis */
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            line-clamp: 3;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            word-break: break-word;
         }
 
         .article-meta {
@@ -593,6 +606,34 @@
             color: #666;
             font-size: 14px;
         }
+
+        .load-more-indicator {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 30px;
+            color: #666;
+            font-size: 14px;
+        }
+
+        .load-more-indicator.loading {
+            color: #667eea;
+        }
+
+        .load-more-indicator .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #667eea;
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-right: 8px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body>
@@ -664,6 +705,11 @@
             <div class="loading">加载中...</div>
         </div>
 
+        <div class="load-more-indicator" id="loadMoreIndicator" style="display: none;">
+            <div class="spinner"></div>
+            <span>加载更多...</span>
+        </div>
+
         <div class="pagination" id="pagination" style="display: none;">
             <button id="prevPage" onclick="changePage(-1)">上一页</button>
             <span class="pagination-info" id="pageInfo"></span>
@@ -724,6 +770,11 @@
         let currentArticleId = null;
         let currentArticleLang = 'en';
         let filterOptions = {};
+        
+        // Infinite scroll state
+        let isLoading = false;
+        let hasMore = true;
+        let observer = null;
 
         // Load filter options on page load
         async function loadFilterOptions() {
@@ -805,9 +856,28 @@
             loadArticles();
         }
 
-        async function loadArticles(highlightId = null) {
+        async function loadArticles(highlightId = null, append = false) {
+            if (isLoading) return;
+            
             const grid = document.getElementById('articlesGrid');
-            grid.innerHTML = '<div class="loading">加载中...</div>';
+            const loadMoreIndicator = document.getElementById('loadMoreIndicator');
+            
+            if (!append) {
+                // Reset for new search/filter
+                grid.innerHTML = '<div class="loading">加载中...</div>';
+                currentPage = 1;
+                hasMore = true;
+                // Clear existing articles
+                if (observer) {
+                    observer.disconnect();
+                }
+            } else {
+                // Show loading indicator at bottom
+                loadMoreIndicator.style.display = 'flex';
+                loadMoreIndicator.classList.add('loading');
+            }
+
+            isLoading = true;
 
             try {
                 const params = new URLSearchParams({
@@ -831,23 +901,60 @@
                 totalPages = data.total_pages;
 
                 if (data.articles.length === 0) {
-                    grid.innerHTML = '<div class="empty-state"><h3>暂无文章</h3><p>没有找到符合条件的文章</p></div>';
-                    document.getElementById('pagination').style.display = 'none';
+                    if (!append) {
+                        grid.innerHTML = '<div class="empty-state"><h3>暂无文章</h3><p>没有找到符合条件的文章</p></div>';
+                    }
+                    hasMore = false;
+                    loadMoreIndicator.style.display = 'none';
+                    if (observer) {
+                        observer.disconnect();
+                    }
                     return;
                 }
 
-                displayArticles(data.articles, highlightId);
-                updatePagination(data);
+                // Check if we've loaded all articles
+                if (data.page >= data.total_pages) {
+                    hasMore = false;
+                    loadMoreIndicator.style.display = 'none';
+                    if (observer) {
+                        observer.disconnect();
+                    }
+                }
+
+                if (append) {
+                    // Append articles to existing grid
+                    displayArticles(data.articles, highlightId, true);
+                } else {
+                    // Replace grid content
+                    displayArticles(data.articles, highlightId, false);
+                }
+
+                currentPage++;
+                
+                // Setup infinite scroll observer after articles are displayed
+                if (!append && hasMore) {
+                    // Use setTimeout to ensure DOM is updated
+                    setTimeout(() => {
+                        setupInfiniteScroll();
+                    }, 100);
+                }
 
             } catch (error) {
                 console.error('Error loading articles:', error);
-                grid.innerHTML = `<div class="empty-state"><h3>加载失败</h3><p>${error.message}</p></div>`;
+                if (!append) {
+                    grid.innerHTML = `<div class="empty-state"><h3>加载失败</h3><p>${error.message}</p></div>`;
+                }
+                hasMore = false;
+            } finally {
+                isLoading = false;
+                loadMoreIndicator.style.display = 'none';
+                loadMoreIndicator.classList.remove('loading');
             }
         }
 
-        function displayArticles(articles, highlightId = null) {
+        function displayArticles(articles, highlightId = null, append = false) {
             const grid = document.getElementById('articlesGrid');
-            grid.innerHTML = articles.map(article => {
+            const articlesHTML = articles.map(article => {
                 const dateStr = new Date(article.date).toLocaleDateString('zh-CN');
                 // Always use Chinese title when currentLanguage is 'zh', fallback to English
                 let title;
@@ -892,22 +999,60 @@
                     </div>
                 `;
             }).join('');
+            
+            if (append) {
+                grid.insertAdjacentHTML('beforeend', articlesHTML);
+            } else {
+                grid.innerHTML = articlesHTML;
+            }
+        }
+        
+        function setupInfiniteScroll() {
+            // Disconnect existing observer if any
+            if (observer) {
+                observer.disconnect();
+            }
+            
+            if (!hasMore) return;
+            
+            // Create intersection observer
+            observer = new IntersectionObserver((entries) => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting && hasMore && !isLoading) {
+                        loadArticles(null, true);
+                    }
+                });
+            }, {
+                rootMargin: '300px' // Start loading 300px before reaching the bottom
+            });
+            
+            // Observe the last article card or load more indicator
+            const grid = document.getElementById('articlesGrid');
+            const cards = grid.querySelectorAll('.article-card');
+            
+            if (cards.length > 0) {
+                // Observe the last few cards (observe last 3 cards for better reliability)
+                const cardsToObserve = Math.min(3, cards.length);
+                for (let i = cards.length - cardsToObserve; i < cards.length; i++) {
+                    observer.observe(cards[i]);
+                }
+            } else {
+                // Fallback: observe load more indicator
+                const loadMoreIndicator = document.getElementById('loadMoreIndicator');
+                if (loadMoreIndicator) {
+                    observer.observe(loadMoreIndicator);
+                }
+            }
         }
 
         function updatePagination(data) {
+            // Hide pagination controls - using infinite scroll instead
             const pagination = document.getElementById('pagination');
-            if (totalPages <= 1) {
-                pagination.style.display = 'none';
-                return;
-            }
-
-            pagination.style.display = 'flex';
-            document.getElementById('pageInfo').textContent = `第 ${data.page} 页，共 ${totalPages} 页 (总计 ${data.total} 篇文章)`;
-            document.getElementById('prevPage').disabled = data.page <= 1;
-            document.getElementById('nextPage').disabled = data.page >= totalPages;
+            pagination.style.display = 'none';
         }
 
         function changePage(delta) {
+            // This function is kept for compatibility but not used with infinite scroll
             const newPage = currentPage + delta;
             if (newPage >= 1 && newPage <= totalPages) {
                 currentPage = newPage;
