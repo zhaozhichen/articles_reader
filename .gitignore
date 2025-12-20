@@ -41,14 +41,18 @@ ENV/
 *.sqlite
 *.sqlite3
 
-# Data files
+# Data files - ignore all article HTML files and metadata
+# Ignore all files in data/html subdirectories except .gitkeep
+data/html/**/*
+!data/html/**/.gitkeep
+# Also ignore HTML and JSON files directly in data/html
 data/html/*.html
 data/html/*.json
-!data/html/.gitkeep
 
 # Logs
 *.log
 logs/
+data/logs/
 
 # OS
 .DS_Store

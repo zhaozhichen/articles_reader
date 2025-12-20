@@ -10,22 +10,39 @@ from bs4 import BeautifulSoup
 from app.database import SessionLocal
 from app.models import Article
 from app.config import HTML_DIR_EN, HTML_DIR_ZH
+from app.services.scrapers import get_scraper_for_url
 
 logger = logging.getLogger(__name__)
 
-def extract_category_from_url(url):
-    """Extract category from URL path.
+def extract_category_from_url(url, html=None):
+    """Extract category from URL path or HTML using appropriate scraper.
     
     Examples:
     - https://www.newyorker.com/books/book-currents/... -> 'books'
     - https://www.newyorker.com/culture/postscript/... -> 'culture'
-    - https://www.newyorker.com/podcast/critics-at-large/... -> 'podcast'
-    - https://www.newyorker.com/best-books-2025 -> 'The New Yorker'
+    - https://www.nytimes.com/interactive/2025/06/30/science/... -> 'science'
+    
+    Args:
+        url: Article URL
+        html: Optional HTML content (for better extraction)
+    
+    Returns:
+        Category name as string
     """
+    # Try to use scraper if available
+    scraper = get_scraper_for_url(url)
+    if scraper:
+        if html:
+            return scraper.extract_category(url, html)
+        else:
+            # Fallback to URL-only extraction
+            return scraper.extract_category(url, '')
+    
+    # Fallback: basic URL parsing for unknown sources
     parsed = urlparse(url)
     path = parsed.path.strip('/')
     
-    # Common categories to look for
+    # Common New Yorker categories
     categories = ['news', 'books', 'culture', 'magazine', 'humor', 'cartoons', 
                   'puzzles-and-games-dept', 'newsletter', 'video', 'podcast', 'podcasts']
     
@@ -33,11 +50,17 @@ def extract_category_from_url(url):
         if path.startswith(f'{category}/') or path == category:
             return category
     
-    # If no category found, return 'The New Yorker'
-    return 'The New Yorker'
+    # If no category found, return domain name or default
+    domain = parsed.netloc.replace('www.', '')
+    return domain if domain else 'Unknown'
 
 def parse_filename_for_import(filename):
-    """Parse metadata from filename."""
+    """Parse metadata from filename.
+    
+    Supports two formats:
+    1. New format: {date}_{source}_{category}_{author}_{title}.html
+    2. Old format: {date}_{category}_{author}_{title}.html (for backward compatibility)
+    """
     filename = Path(filename).name
     base_name = filename.replace('.html', '')
     parts = base_name.split('_')
@@ -50,12 +73,29 @@ def parse_filename_for_import(filename):
     except ValueError:
         return None
     
-    category = parts[1]
-    author = parts[2] if len(parts) > 3 else 'unknown'
-    title = '_'.join(parts[3:]) if len(parts) > 3 else 'untitled'
+    # Check if it's new format (with source) or old format
+    # New format has 5+ parts: date_source_category_author_title
+    # Old format has 4+ parts: date_category_author_title
+    
+    # Known source slugs for detection
+    known_sources = ['newyorker', 'nytimes']
+    
+    if len(parts) >= 5 and parts[1] in known_sources:
+        # New format: date_source_category_author_title
+        source_slug = parts[1]
+        category = parts[2]
+        author = parts[3] if len(parts) > 4 else 'unknown'
+        title = '_'.join(parts[4:]) if len(parts) > 4 else 'untitled'
+    else:
+        # Old format: date_category_author_title (backward compatibility)
+        category = parts[1]
+        author = parts[2] if len(parts) > 3 else 'unknown'
+        title = '_'.join(parts[3:]) if len(parts) > 3 else 'untitled'
+        source_slug = None  # Will be determined from URL or metadata
     
     return {
         'date': date_obj,
+        'source_slug': source_slug,
         'category': category,
         'author': author.replace('_', ' '),
         'title': title.replace('_', ' '),
@@ -102,7 +142,7 @@ def extract_metadata_from_html_for_import(html_path, prefer_h1=False):
                 title_tag = soup.find('title')
                 if title_tag:
                     title = title_tag.get_text().strip()
-                    title = re.sub(r'\s*\|\s*The New Yorker\s*$', '', title)
+                    title = re.sub(r'\s*\|\s*New Yorker\s*$', '', title)
                     metadata['title'] = title
         
         author_meta = soup.find('meta', property='article:author')
@@ -151,15 +191,36 @@ def import_from_subdirs_inline(en_dir, zh_dir):
             
             en_path = f"en/{en_file.name}"
             
-            # Extract category from URL if available, otherwise use filename
+            # Extract category and source from URL if available, otherwise use filename
+            source = "New Yorker"  # Default
+            source_slug = parsed.get('source_slug')  # May be None for old format files
+            
             if url:
-                category = extract_category_from_url(url)
+                scraper = get_scraper_for_url(url)
+                if scraper:
+                    source = scraper.get_source_name()
+                    source_slug = scraper.get_source_slug()
+                    # Try to read HTML to get better category extraction
+                    try:
+                        with open(en_file, 'r', encoding='utf-8') as f:
+                            html_content = f.read()
+                        category = scraper.extract_category(url, html_content)
+                    except Exception:
+                        category = scraper.extract_category(url, '')
+                else:
+                    category = extract_category_from_url(url)
             else:
                 category = parsed['category']
+                # If we have source_slug from filename but no URL, try to determine source
+                if source_slug:
+                    if source_slug == 'newyorker':
+                        source = "New Yorker"
+                    elif source_slug == 'nytimes':
+                        source = "New York Times"
             
-            # Convert 'na' category to 'The New Yorker'
+            # Convert 'na' category to source name
             if category == 'na':
-                category = 'The New Yorker'
+                category = source
             
             existing = None
             if url:
@@ -170,24 +231,23 @@ def import_from_subdirs_inline(en_dir, zh_dir):
             
             if existing:
                 existing.title = title_en
-                # Update title_zh if we have a valid Chinese title
-                # If zh_file exists but extraction failed (title_zh is None), preserve existing title_zh
-                # If zh_file doesn't exist, preserve existing title_zh
-                # Only update if we successfully extracted a Chinese title
-                if title_zh:
+                # Only update title_zh if:
+                # 1. We extracted a title AND it's different from English title (likely Chinese)
+                # 2. OR existing title_zh is None and we have a valid extraction
+                if title_zh and title_zh != title_en:
+                    # Successfully extracted Chinese title
                     existing.title_zh = title_zh
-                # If zh_file exists but we couldn't extract title, and existing title_zh is None,
-                # try fallback extraction (without prefer_h1) as last resort
-                elif zh_file.exists() and existing.title_zh is None:
-                    # Try fallback extraction
+                elif title_zh is None and zh_file.exists() and existing.title_zh is None:
+                    # Extraction failed but file exists, try fallback
                     zh_metadata_fallback = extract_metadata_from_html_for_import(zh_file, prefer_h1=False)
                     title_zh_fallback = zh_metadata_fallback.get('title')
                     if title_zh_fallback and title_zh_fallback != title_en:
-                        # Only use fallback if it's different from English title (likely translated)
                         existing.title_zh = title_zh_fallback
+                # If title_zh == title_en, extraction failed (fell back to English), preserve existing
                 existing.date = parsed['date']
                 existing.category = category
                 existing.author = author
+                existing.source = source
                 existing.html_file_en = en_path
                 # Only update html_file_zh if Chinese file exists
                 if zh_path:
@@ -203,7 +263,7 @@ def import_from_subdirs_inline(en_dir, zh_dir):
                     date=parsed['date'],
                     category=category,
                     author=author,
-                    source="The New Yorker",
+                    source=source,
                     original_url=url,
                     html_file_en=en_path,
                     html_file_zh=zh_path
@@ -285,9 +345,9 @@ def import_articles_from_directory(directory: Path) -> int:
                     # Update existing article
                     existing.title = metadata.get('title', 'untitled')
                     existing.date = article_date
-                    existing.category = metadata.get('category', 'The New Yorker')
+                    existing.category = metadata.get('category', 'New Yorker')
                     existing.author = metadata.get('author', 'unknown')
-                    existing.source = metadata.get('source', 'The New Yorker')
+                    existing.source = metadata.get('source', 'New Yorker')
                     existing.html_file_en = metadata.get('original_file', '')
                     existing.html_file_zh = metadata.get('translated_file')
                     existing.updated_at = datetime.utcnow()
@@ -297,9 +357,9 @@ def import_articles_from_directory(directory: Path) -> int:
                     article = Article(
                         title=metadata.get('title', 'untitled'),
                         date=article_date,
-                        category=metadata.get('category', 'The New Yorker'),
+                        category=metadata.get('category', 'New Yorker'),
                         author=metadata.get('author', 'unknown'),
-                        source=metadata.get('source', 'The New Yorker'),
+                        source=metadata.get('source', 'New Yorker'),
                         original_url=metadata.get('url', ''),
                         html_file_en=metadata.get('original_file', ''),
                         html_file_zh=metadata.get('translated_file')

@@ -4,7 +4,7 @@ A web application for reading NY Times articles with Chinese translation support
 
 ## Features
 
-- 📰 Automatic daily article scraping from The New Yorker
+- 📰 Automatic daily article scraping from New Yorker
 - 🌐 Chinese/English language toggle
 - 🔍 Filter articles by category, author, date, and source
 - 📱 Responsive card-based layout

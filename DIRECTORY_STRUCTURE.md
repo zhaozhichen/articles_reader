@@ -22,12 +22,22 @@ data/html/
 
 ## 文件命名格式
 
-文件名格式保持不变：
+文件名格式（新格式，包含source标识符）：
 ```
-YYYY-MM-DD_category_author_title.html
+YYYY-MM-DD_source_category_author_title.html
 ```
 
-**注意**：中文文件不再需要 `zh_` 前缀，因为它们在 `/zh` 目录中。
+示例：
+- `2025-12-19_newyorker_culture_Joshua_Rothman_Is_A.I._Actually_a_Bubble.html`
+- `2025-06-30_nytimes_interactive_steven-strogatz_Bowling_for_Nobels.html`
+
+**Source标识符**：
+- `newyorker` - New Yorker 文章
+- `nytimes` - New York Times 文章
+
+**注意**：
+- 中文文件使用相同的文件名，存储在 `/zh` 目录中
+- 系统同时支持旧格式（向后兼容），但新保存的文件将使用新格式
 
 ## 数据库存储
 

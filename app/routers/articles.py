@@ -17,6 +17,7 @@ from app.models import Article
 from app.schemas import ArticleResponse, ArticleListResponse, FilterOptionsResponse
 from app.config import HTML_DIR, HTML_DIR_EN, HTML_DIR_ZH, BASE_DIR, GEMINI_API_KEY
 from app.services.importer import import_articles_from_directory
+from app.services.scrapers import get_scraper_for_url
 
 logger = logging.getLogger(__name__)
 
@@ -360,11 +361,12 @@ async def add_article_from_url(
     try:
         url = request.url.strip()
         
-        # Validate URL
-        if not url.startswith('https://www.newyorker.com/'):
+        # Check if we have a scraper for this URL
+        scraper = get_scraper_for_url(url)
+        if not scraper:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="URL must be from www.newyorker.com"
+                detail=f"URL not supported. Supported sources: New Yorker, New York Times"
             )
         
         # Check if article already exists
@@ -375,7 +377,7 @@ async def add_article_from_url(
                 detail="Article with this URL already exists"
             )
         
-        logger.info(f"Processing article from URL: {url}")
+        logger.info(f"Processing article from URL: {url} (source: {scraper.get_source_name()})")
         
         # Path to the scraping script
         script_path = BASE_DIR / "scripts" / "extract_articles_by_date.py"

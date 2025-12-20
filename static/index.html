@@ -479,6 +479,16 @@
             margin-bottom: 20px;
             padding-bottom: 15px;
             border-bottom: 2px solid #f0f0f0;
+            position: relative;
+            z-index: 1001;
+            background: white;
+            border-radius: 12px 12px 0 0;
+            padding-top: 0;
+            margin-top: -30px;
+            margin-left: -30px;
+            margin-right: -30px;
+            padding-left: 30px;
+            padding-right: 30px;
         }
 
         .modal-header h2 {
@@ -490,6 +500,8 @@
             display: flex;
             gap: 10px;
             align-items: center;
+            position: relative;
+            z-index: 1002;
         }
 
         .modal-close {
@@ -512,6 +524,18 @@
 
         .article-content {
             margin-top: 20px;
+            position: relative;
+            z-index: 1;
+        }
+        
+        /* Ensure article content images don't overlap header */
+        .article-content img,
+        .article-content picture,
+        .article-content [style*="position: absolute"],
+        .article-content [style*="position:absolute"] {
+            max-width: 100% !important;
+            position: relative !important;
+            z-index: auto !important;
         }
 
         .article-html-content {
@@ -692,8 +716,8 @@
                 <h3>➕ 手动添加文章</h3>
                 <div class="add-article-form">
                     <div class="form-group">
-                        <label for="articleUrl">文章 URL (New Yorker)</label>
-                        <input type="url" id="articleUrl" placeholder="https://www.newyorker.com/..." />
+                        <label for="articleUrl">文章 URL</label>
+                        <input type="url" id="articleUrl" placeholder="https://www.newyorker.com/... 或 https://www.nytimes.com/..." />
                     </div>
                     <button id="addArticleBtn" onclick="addArticleFromUrl()">添加文章</button>
                 </div>
@@ -924,15 +948,16 @@
                 if (append) {
                     // Append articles to existing grid
                     displayArticles(data.articles, highlightId, true);
+                    // Increment page for next load
+                    currentPage++;
                 } else {
                     // Replace grid content
                     displayArticles(data.articles, highlightId, false);
+                    currentPage = data.page;
                 }
 
-                currentPage++;
-                
                 // Setup infinite scroll observer after articles are displayed
-                if (!append && hasMore) {
+                if (hasMore) {
                     // Use setTimeout to ensure DOM is updated
                     setTimeout(() => {
                         setupInfiniteScroll();
@@ -1279,10 +1304,13 @@
                 return;
             }
 
-            if (!url.startsWith('https://www.newyorker.com/')) {
+            // Basic URL format validation (detailed validation is done by backend)
+            try {
+                new URL(url);
+            } catch (e) {
                 messageDiv.className = 'add-article-message error';
                 messageDiv.style.display = 'block';
-                messageDiv.textContent = 'URL 必须是来自 www.newyorker.com 的文章链接';
+                messageDiv.textContent = '请输入有效的 URL';
                 return;
             }
 

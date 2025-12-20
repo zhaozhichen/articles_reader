@@ -101,13 +101,39 @@ async def run_daily_scrape():
             
     except subprocess.TimeoutExpired:
         logger.error("Scraping script timed out after 5 hours")
+        # Still try to import any articles that were saved before timeout
+        logger.info("Attempting to import articles saved before timeout...")
+        try:
+            import_count = await asyncio.to_thread(import_articles_from_directory, HTML_DIR_EN)
+            logger.info(f"Imported {import_count} articles (saved before timeout)")
+        except Exception as e:
+            logger.error(f"Error importing articles after timeout: {str(e)}", exc_info=True)
+    except asyncio.CancelledError:
+        logger.warning("Daily scrape task was cancelled (likely due to server restart)")
+        # Still try to import any articles that were saved before cancellation
+        logger.info("Attempting to import articles saved before cancellation...")
+        try:
+            import_count = await asyncio.to_thread(import_articles_from_directory, HTML_DIR_EN)
+            logger.info(f"Imported {import_count} articles (saved before cancellation)")
+        except Exception as e:
+            logger.error(f"Error importing articles after cancellation: {str(e)}", exc_info=True)
+        # Re-raise CancelledError to allow proper cleanup
+        raise
     except Exception as e:
         logger.error(f"Error running daily scrape: {str(e)}", exc_info=True)
+        # Still try to import any articles that were saved before error
+        logger.info("Attempting to import articles saved before error...")
+        try:
+            import_count = await asyncio.to_thread(import_articles_from_directory, HTML_DIR_EN)
+            logger.info(f"Imported {import_count} articles (saved before error)")
+        except Exception as import_error:
+            logger.error(f"Error importing articles after error: {str(import_error)}", exc_info=True)
 
 def start_scheduler():
-    """Start the scheduler with daily job at 7 PM Eastern Time."""
-    # Schedule daily job at 7:00 PM Eastern Time
+    """Start the scheduler with daily jobs at 7 PM and 11 PM Eastern Time."""
     eastern = pytz.timezone('America/New_York')
+    
+    # Schedule daily job at 7:00 PM Eastern Time (full scrape and translate)
     scheduler.add_job(
         run_daily_scrape,
         trigger=CronTrigger(hour=19, minute=0, timezone=eastern),
@@ -116,11 +142,64 @@ def start_scheduler():
         replace_existing=True
     )
     
+    # Schedule same job at 11:00 PM Eastern Time
+    # If 7 PM job completed, this will be a no-op (script skips existing files)
+    # If 7 PM job didn't complete, this will continue the work
+    scheduler.add_job(
+        run_daily_scrape,
+        trigger=CronTrigger(hour=23, minute=0, timezone=eastern),
+        id='daily_scrape_backup',
+        name='Daily article scrape (backup)',
+        replace_existing=True
+    )
+    
     scheduler.start()
     logger.info("Scheduler started. Daily scrape scheduled for 7:00 PM Eastern Time")
+    logger.info("Backup scrape scheduled for 11:00 PM Eastern Time")
+    
+    # On startup, check if there are any unimported articles from today
+    # This helps recover from interrupted scraping tasks
+    try:
+        import asyncio
+        asyncio.create_task(recover_unimported_articles())
+    except Exception as e:
+        logger.warning(f"Could not start recovery task: {e}")
+
+async def recover_unimported_articles():
+    """Recover and import any articles that were saved but not imported due to interruption."""
+    try:
+        # Wait a bit for the server to fully start
+        await asyncio.sleep(5)
+        
+        logger.info("Checking for unimported articles from today...")
+        eastern = pytz.timezone('America/New_York')
+        today_et = datetime.now(eastern).date()
+        
+        # Check if there are articles in the directory but not in database
+        en_files = list(HTML_DIR_EN.glob(f"{today_et.strftime('%Y-%m-%d')}*.html"))
+        if en_files:
+            db = SessionLocal()
+            try:
+                # Count articles in database for today
+                db_count = db.query(Article).filter(Article.date == today_et).count()
+                if len(en_files) > db_count:
+                    logger.info(f"Found {len(en_files)} article files but only {db_count} in database. Importing missing articles...")
+                    import_count = await asyncio.to_thread(import_articles_from_directory, HTML_DIR_EN)
+                    logger.info(f"Recovery import completed: {import_count} articles imported")
+            finally:
+                db.close()
+    except Exception as e:
+        logger.error(f"Error in recovery task: {e}", exc_info=True)
 
 def stop_scheduler():
-    """Stop the scheduler."""
-    scheduler.shutdown()
+    """Stop the scheduler gracefully, waiting for running jobs to complete."""
+    # Get running jobs
+    running_jobs = scheduler.get_jobs()
+    if running_jobs:
+        logger.info(f"Shutting down scheduler. {len(running_jobs)} job(s) scheduled.")
+    
+    # Shutdown scheduler - this will cancel pending jobs but running jobs will continue
+    # Use wait=False to allow running jobs to complete, but cancel pending ones
+    scheduler.shutdown(wait=False)
     logger.info("Scheduler stopped")
 
