@@ -1,4 +1,4 @@
-"""New Yorker extraction/translation pipeline.
+"""Article extraction/translation pipeline.
 
 核心流程：
 - DOM 剥离：找到正文容器，给需要翻译的块级文本节点打 data-translate-id。
@@ -19,9 +19,11 @@ from bs4 import BeautifulSoup, Tag
 
 try:
     from google import genai
+    from google.genai import types
     GEMINI_AVAILABLE = True
 except ImportError:  # pragma: no cover - optional dependency
     GEMINI_AVAILABLE = False
+    types = None
 
 logger = logging.getLogger(__name__)
 # Ensure this module logs even when called from standalone scripts.
@@ -63,14 +65,14 @@ if not logging.getLogger().handlers:
     )
 
 # --------- Tunables --------- #
-STYLE_MODEL_DEFAULT = "gemini-3-pro-preview"
-TRANSLATE_MODEL_DEFAULT = "gemini-3-pro-preview"
-STYLE_SAMPLE_CHARS = 8000  # 用于风格分析的字符上限
-CHUNK_CHAR_LIMIT = 15000  # 每个翻译批次的字符上限
+STYLE_MODEL_DEFAULT = "gemini-3-flash-preview"
+TRANSLATE_MODEL_DEFAULT = "gemini-3-flash-preview"
+STYLE_SAMPLE_CHARS = 10000  # 用于风格分析的字符上限
+CHUNK_CHAR_LIMIT = 100000  # 每个翻译批次的字符上限
 
 # Debug flag: 跳过 Gemini 翻译，使用 placeholder 中文（用于测试排版）
 # 设置为 True 时跳过 Gemini API 调用，使用占位符中文测试排版
-SKIP_GEMINI_TRANSLATION = True  # 手动修改为 True 以启用调试模式
+SKIP_GEMINI_TRANSLATION = False  # 手动修改为 True 以启用调试模式
 
 # 只翻译这些块级节点，忽略脚注/广告等噪音
 TARGET_TAGS = ("p", "h1", "h2", "h3", "h4", "h5", "h6", "figcaption", "li")
@@ -107,6 +109,9 @@ def translate_newyorker_html(
     _ensure_logger_handlers()
     logger.info("translate_newyorker_html called. SKIP_GEMINI_TRANSLATION = %s", SKIP_GEMINI_TRANSLATION)
     
+    # Record start time for total translation duration
+    translation_start_time = time.time()
+    
     try:
         logger.debug("Calling extract_content_for_translation...")
         soup, payload = extract_content_for_translation(html_content)
@@ -132,6 +137,11 @@ def translate_newyorker_html(
                 if not translated_html:
                     logger.error("inject_translations returned None or empty string")
                     return None
+                
+                # Log total translation time for placeholder mode
+                translation_duration = time.time() - translation_start_time
+                logger.info("Total translation time (placeholder mode): %.2f seconds", translation_duration)
+                
                 return translated_html
             except Exception as exc:
                 logger.error("Error in placeholder mode: %s", exc, exc_info=True)
@@ -154,9 +164,15 @@ def translate_newyorker_html(
     
     client = genai.Client(api_key=api_key)
 
+    # Record time for style analysis
+    style_start_time = time.time()
     style_corpus = build_style_corpus(payload, style_sample_chars)
     style_notes = request_style_profile(client, style_corpus, style_model)
+    style_duration = time.time() - style_start_time
+    logger.info("Style analysis completed in %.2f seconds", style_duration)
 
+    # Record time for translation
+    translation_batch_start_time = time.time()
     translated_items = translate_payload_in_batches(
         client=client,
         payload=payload,
@@ -164,12 +180,20 @@ def translate_newyorker_html(
         model=translate_model,
         chunk_char_limit=chunk_char_limit,
     )
+    translation_batch_duration = time.time() - translation_batch_start_time
+    logger.info("Translation batches completed in %.2f seconds", translation_batch_duration)
 
     if not translated_items:
         logger.error("Translation failed or returned empty payload.")
         return None
         
     translated_html = inject_translations(soup, translated_items)
+    
+    # Log total translation time (including style analysis and translation)
+    total_duration = time.time() - translation_start_time
+    logger.info("Total translation time (style analysis + translation): %.2f seconds (style: %.2f s, translation: %.2f s)", 
+                total_duration, style_duration, translation_batch_duration)
+    
     return translated_html
 
 
@@ -339,7 +363,7 @@ def extract_content_for_translation(html_content: str) -> Tuple[BeautifulSoup, L
 
 
 def _find_article_root(soup: BeautifulSoup) -> Optional[Tag]:
-    """Heuristic search for New Yorker body container."""
+    """Heuristic search for article body container."""
     candidates: List[Optional[Tag]] = [
         soup.find("article"),
         soup.select_one("main[role=main]"),
@@ -381,7 +405,7 @@ def _should_skip(tag: Tag) -> bool:
     text_lower = text.lower()
     
     # Special handling for 'paywall' class: only skip if it's a short subscription message
-    # New Yorker uses 'paywall' class on actual article paragraphs, not just subscription prompts
+    # Some sites use 'paywall' class on actual article paragraphs, not just subscription prompts
     if "paywall" in [c.lower() for c in classes]:
         # Skip only if it's a short message that looks like a subscription prompt
         is_short = len(text) < 100
@@ -448,15 +472,31 @@ def request_style_profile(client: "genai.Client", corpus: str, model: str) -> st
     if not corpus:
         return ""
 
-    prompt = (
-        "你是一位精通中英的资深编辑，熟悉《纽约客》的写作风格。"
-        "请阅读以下文章文本片段，总结 3-5 个中文 bullet，描述节奏、句法、口吻、幽默感、叙述视角等。"
-        "仅输出风格要点，不要翻译原文。\n\n"
-        f"文章片段：\n{corpus}"
-    )
+    prompt = f"""
+请阅读以下文章文本片段，总结 3-5 个中文 bullet，描述节奏、句法、口吻、幽默感、叙述视角等。
+
+请重点关注：
+1. 【语域定位】：是像"知乎高赞回答"那样通俗，还是像"三联生活周刊"那样书卷气？
+2. 【句式重构】：长难句应该彻底切碎，还是保留一定的缠绕感？
+3. 【关键词映射】：如果有专有名词或特定梗，指出其中文对应调性。
+
+仅输出这 3 点策略（中文），不要翻译原文，不要废话。
+
+文章片段：
+{corpus}
+"""
 
     try:
-        response_text = _generate_text(client, model, prompt)
+        # Use GenerateContentConfig for better control
+        if types and hasattr(types, 'GenerateContentConfig'):
+            config = types.GenerateContentConfig(
+                temperature=0.5,  # Slightly higher for creative analysis
+                system_instruction="你是一位精通中英的资深编辑，擅长分析英文文章的写作风格。"
+            )
+            response_text = _generate_text(client, model, prompt, config=config)
+        else:
+            # Fallback for older SDK versions
+            response_text = _generate_text(client, model, prompt)
         logger.info("Style profile generated.")
         return response_text.strip()
     except Exception as exc:  # pragma: no cover - network path
@@ -492,7 +532,30 @@ def translate_payload_in_batches(
     for idx, batch in enumerate(batches):
         logger.info("Translating batch %d/%d (size: %d chars).", idx + 1, len(batches), sum(len(i["text"]) for i in batch))
         prompt = _build_translation_prompt(batch, style_notes)
-        response_text = _generate_text(client, model, prompt)
+        # Log full prompt for debugging
+        # logger.info("=== Full Translation Prompt (Batch %d/%d) ===", idx + 1, len(batches))
+        # logger.info("%s", prompt)
+        # logger.info("=== End of Prompt ===")
+        
+        # Use GenerateContentConfig with forced JSON output
+        if types and hasattr(types, 'GenerateContentConfig'):
+            config = types.GenerateContentConfig(
+                temperature=0.3,  # Lower temperature for stable JSON output
+                top_p=0.95,
+                response_mime_type="application/json",  # Force JSON output
+                system_instruction="你是一位专业的中文创译编辑和非虚构写作专家。你的任务不是逐字翻译，而是依据英文原意进行中文重写（Re-writing）。"
+            )
+            response_text = _generate_text(client, model, prompt, config=config)
+        else:
+            # Fallback for older SDK versions
+            response_text = _generate_text(client, model, prompt)
+        
+        # Log raw response for debugging
+        # logger.info("=== Raw Gemini Response (Batch %d/%d) ===", idx + 1, len(batches))
+        # logger.info("Response length: %d chars", len(response_text))
+        # logger.info("First 500 chars: %s", response_text[:500])
+        # logger.info("Last 500 chars: %s", response_text[-500:] if len(response_text) > 500 else response_text)
+        # logger.info("=== End of Raw Response ===")
         batch_result = _parse_translation_response(response_text)
         if not batch_result:
             raise RuntimeError("Empty translation batch result.")
@@ -502,24 +565,49 @@ def translate_payload_in_batches(
 
 
 def _build_translation_prompt(batch: Sequence[Dict[str, str]], style_notes: str) -> str:
-    style_block = style_notes or "保持《纽约客》特有的知性、冷静、长句叙事风格。"
-    return (
-        "你是《纽约客》中文创译编辑。请先理解整体风格，再按 JSON 翻译。"
-        "翻译原则：信达雅，保持长句节奏，避免直译腔，术语前后一致，避免口语化。"
-        f"\n\n风格参考（中文要点）：\n{style_block}\n"
-        "\n输出要求：\n"
-        "- 只输出 JSON list（无 Markdown、无额外解释）。\n"
-        '- 每个对象字段：{"id": <string>, "translated": <string>}。\n'
-        "- 保留原顺序，id 原样返回。\n"
-        "- 只翻译 text 字段内容，别增加或省略节点。\n"
-        "\n待翻译 JSON：\n"
-        f"{json.dumps(batch, ensure_ascii=False)}"
-    )
+    """Build translation prompt with style guide."""
+    style_block = style_notes or "保持原文的写作风格和语调，包括句法结构、叙述节奏和语言特色。"
+    return f"""
+请参考【翻译策略】，将输入的 JSON 内容转换为地道的中文。
+
+核心原则（必须严格执行）：
+1. 【反翻译腔】：严禁使用"被...所..."、"当...的时候"、"...之一"等生硬的翻译体。
+2. 【流水句重构】：把英文的复杂从句（Clause）拆解为中文的短句或流水句。
+3. 【词汇渲染】：用词要精准且有质感。
+
+【翻译策略】：
+{style_block}
+
+输出格式要求：
+- 仅输出纯净的 JSON List。
+- 严禁包含 Markdown 标记。
+- id 必须与原文严格一致。
+- 每个对象必须包含字段：{{"id": <string>, "translated": <string>, "tag": <string>}}
+- 翻译后的中文内容放在 "translated" 字段中，不要使用 "text" 字段。
+
+待处理数据：
+{json.dumps(batch, ensure_ascii=False)}
+"""
 
 
-def _generate_text(client: "genai.Client", model: str, prompt: str) -> str:
-    """Call Gemini and normalize text output."""
-    response = client.models.generate_content(model=model, contents=prompt)
+def _generate_text(client: "genai.Client", model: str, prompt: str, config=None) -> str:
+    """Call Gemini and normalize text output.
+    
+    Args:
+        client: Gemini client instance
+        model: Model name
+        prompt: Prompt text
+        config: Optional GenerateContentConfig (for new SDK)
+    """
+    if config:
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=config
+        )
+    else:
+        response = client.models.generate_content(model=model, contents=prompt)
+    
     if not response:
         raise RuntimeError("Empty response from Gemini.")
 
@@ -532,34 +620,75 @@ def _generate_text(client: "genai.Client", model: str, prompt: str) -> str:
             text = parts[0].text
         else:
             text = str(response)
+    else:
+        text = str(response)
 
     cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.split("```", 2)[-1]
-    if cleaned.endswith("```"):
-        cleaned = cleaned[:-3]
-    return cleaned.strip()
+    # Only clean markdown if not using forced JSON output
+    if config and hasattr(config, 'response_mime_type') and config.response_mime_type == "application/json":
+        # With forced JSON, response should already be clean JSON
+        return cleaned
+    else:
+        # Clean markdown code blocks for text responses
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("```", 2)[-1]
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+        return cleaned.strip()
 
 
 def _parse_translation_response(raw: str) -> List[Dict[str, str]]:
-    """Parse JSON list from model output."""
+    """Parse JSON list from model output and normalize field names."""
     cleaned = raw.strip()
+    
+    # Remove markdown code blocks if present
+    if cleaned.startswith("```json"):
+        cleaned = cleaned[7:].strip()
+    elif cleaned.startswith("```"):
+        cleaned = cleaned[3:].strip()
+    
     if cleaned.startswith("json"):
         cleaned = cleaned[4:].strip()
 
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`")
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3].strip()
 
+    # Try direct JSON parse
+    parsed = None
     try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        logger.debug("Direct JSON parse failed: %s", e)
+        logger.debug("Cleaned text (first 500 chars): %s", cleaned[:500])
         pass
 
-    match = re.search(r"\[.*\]", cleaned, flags=re.S)
-    if match:
-        return json.loads(match.group(0))
+    # Try to find JSON array in the text if direct parse failed
+    if parsed is None:
+        match = re.search(r"\[.*\]", cleaned, flags=re.S)
+        if match:
+            try:
+                parsed = json.loads(match.group(0))
+            except json.JSONDecodeError as e:
+                logger.debug("JSON array extraction failed: %s", e)
+                logger.debug("Matched text (first 500 chars): %s", match.group(0)[:500])
+                pass
 
-    raise ValueError("Model response is not valid JSON.")
+    if parsed is None:
+        # Log the full response for debugging
+        logger.error("Failed to parse JSON from response. Full response (first 1000 chars): %s", raw[:1000])
+        logger.error("Cleaned text (first 1000 chars): %s", cleaned[:1000])
+        raise ValueError("Model response is not valid JSON.")
+    
+    # Normalize field names: if response has "text" field instead of "translated", rename it
+    normalized = []
+    for item in parsed:
+        normalized_item = dict(item)
+        # If item has "text" but not "translated", rename "text" to "translated"
+        if "text" in normalized_item and "translated" not in normalized_item:
+            normalized_item["translated"] = normalized_item.pop("text")
+        normalized.append(normalized_item)
+    
+    return normalized
 
 
 def _generate_placeholder_translations(payload: Sequence[Dict[str, str]]) -> List[Dict[str, str]]:
@@ -635,7 +764,7 @@ def inject_translations(soup: BeautifulSoup, translated_items: Sequence[Dict[str
             while current:
                 if current == node:
                     is_within_node = True
-                    break
+                break
                 current = current.find_parent()
             
             if is_within_node:
@@ -709,17 +838,18 @@ def inject_translations(soup: BeautifulSoup, translated_items: Sequence[Dict[str
             title_translation = item["translated"]
             logger.debug("Found title translation by ID 0 fallback")
             break
-    
+                    
     if title_translation:
         # Replace <title> tag
         title_tag = soup.find("title")
         if title_tag:
-            # Keep the " | The New Yorker" suffix if present
+            # Preserve any " | " suffix (e.g., " | The New Yorker", " | The New York Times")
             original_title = title_tag.get_text()
-            if " | The New Yorker" in original_title:
-                title_tag.string = f"{title_translation} | The New Yorker"
-        else:
-            title_tag.string = title_translation
+            if " | " in original_title:
+                suffix = " | " + original_title.split(" | ", 1)[1]
+                title_tag.string = f"{title_translation}{suffix}"
+            else:
+                title_tag.string = title_translation
             logger.debug("Replaced <title> tag with translated title")
         
         # Replace og:title meta tag
