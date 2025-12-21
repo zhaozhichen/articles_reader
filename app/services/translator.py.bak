@@ -1,0 +1,517 @@
+"""Translation service for article content."""
+import os
+import random
+import time
+import sys
+import logging
+from typing import Optional
+from bs4 import BeautifulSoup
+
+try:
+    from google import genai
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+
+# Setup logger
+logger = logging.getLogger(__name__)
+
+
+def translate_html_with_gemini(html_content: str, api_key: Optional[str] = None, debug_filename: Optional[str] = None) -> Optional[str]:
+    """Translate only the article body content to Simplified Chinese using Gemini 3 Pro.
+    
+    Only translates the main article body, keeping navigation, scripts, styles, etc. in English.
+    
+    Args:
+        html_content: Original HTML content
+        api_key: Gemini API key (if None, uses GEMINI_API_KEY env var)
+    
+    Returns:
+        Translated HTML content with only body translated, or None if translation fails
+    """
+    if not GEMINI_AVAILABLE:
+        logger.warning("  Warning: google.genai not installed. Install with: pip install google-genai")
+        return None
+    
+    # Get API key (the client gets it from GEMINI_API_KEY env var automatically)
+    # But we can check if it's set
+    if api_key is None:
+        api_key = os.getenv('GEMINI_API_KEY')
+    
+    if not api_key:
+        logger.warning("  Warning: GEMINI_API_KEY not set. Skipping translation.")
+        return None
+    
+    try:
+        # Extract article body - this should be done by the caller, but we'll try to find it
+        # The caller should pass body_html separately, but for backward compatibility we extract here
+        debug_info = f" [{debug_filename}]" if debug_filename else ""
+        logger.info(f"    {debug_info} Extracting article body content...")
+        body_html, body_element = _extract_article_body(html_content)
+        
+        if not body_html or not body_element:
+            logger.warning("  Warning: Could not find article body content")
+            return None
+        
+        body_size = len(body_html)
+        logger.info(f"    {debug_info} Found article body (size: {body_size} chars)")
+        
+        # Log body structure for debugging
+        from bs4 import BeautifulSoup
+        body_soup_debug = BeautifulSoup(body_html, 'html.parser')
+        body_paras_debug = body_soup_debug.find_all('p')
+        logger.info(f"    {debug_info} [DEBUG] Body HTML contains {len(body_paras_debug)} paragraphs")
+        if body_paras_debug:
+            logger.info(f"    {debug_info} [DEBUG] First paragraph in body: {body_paras_debug[0].get_text(strip=True)[:150]}...")
+        
+        # Maximum size for single translation
+        MAX_SINGLE_TRANSLATION = 200000
+        
+        # Check if body is too long to translate
+        if body_size > MAX_SINGLE_TRANSLATION:
+            logger.warning(f"    Article body is too long ({body_size:,} chars), skipping translation and showing placeholder")
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # Find the body element to replace
+            original_body = None
+            for selector in [('article', {}), ('.body__container', {}), ('.container--body-inner', {}), ('main', {})]:
+                if selector[0].startswith('.'):
+                    original_body = soup.select_one(selector[0])
+                else:
+                    tag_name = selector[0].split('.')[-1] if '.' in selector[0] else selector[0]
+                    original_body = soup.find(tag_name, selector[1])
+                if original_body:
+                    break
+            
+            if original_body:
+                # Create placeholder message with size information
+                placeholder_html = f'<div style="padding: 2rem; text-align: center; font-family: Arial, sans-serif;"><p style="font-size: 18px; color: #666;">文章过长，无法翻译</p><p style="font-size: 14px; color: #999; margin-top: 1rem;">Article too long to translate, size: {body_size:,} characters</p></div>'
+                placeholder_soup = BeautifulSoup(placeholder_html, 'html.parser')
+                
+                # Replace body content with placeholder
+                original_body.clear()
+                original_body.append(placeholder_soup.find('div'))
+                
+                return str(soup)
+            else:
+                # If we can't find the body, return original HTML with a note
+                logger.warning("  Warning: Could not locate body element for placeholder insertion")
+                return html_content
+        
+        # The client gets the API key from the environment variable `GEMINI_API_KEY`
+        client = genai.Client()
+        
+        # Create prompt for translation
+        prompt = """请将以下HTML内容翻译成简体中文。
+
+翻译流程：
+第一步：仔细阅读全文
+- 先完整阅读整篇文章，理解文章的主题、内容和结构
+- 分析文章的行文风格（正式、轻松、学术、新闻等）
+- 识别文章的语气和语调（严肃、幽默、批判、客观等）
+- 注意文章的文体特征（叙述、议论、描写等）
+- 理解文章的语境和背景
+
+第二步：进行翻译
+- 基于对文章风格和语气的理解，进行翻译
+- 确保翻译非常流畅，完全符合现代汉语的写作习惯
+- 使用自然、地道的现代汉语表达
+- 避免生硬的直译，要意译为主，确保可读性
+- 保持原文的风格和语气特征
+- 专业术语要准确，但表达要符合中文习惯
+
+技术性要求（非常重要）：
+1. **只翻译文本内容**，保留所有HTML标签、属性和结构完全不变
+2. **保留所有元素**：包括所有div、section、article、picture、img、style、script等元素
+3. **保留所有属性**：包括class、id、style、data-*、src、srcset等所有属性
+4. **保留所有CSS**：包括内联样式（style属性）和所有CSS类名
+5. **保留所有图片和媒体**：不要移动、删除或修改任何图片、视频等媒体元素
+6. **保留定位信息**：保持所有position、z-index、absolute、relative等CSS定位属性
+7. **不翻译代码、URL或技术属性**：只翻译可见的文本内容
+8. **保持HTML结构完全不变**：元素顺序、嵌套关系、空白字符都要保持原样
+9. 返回完整的翻译后的HTML（只包含这个body部分的HTML）
+
+特别注意：
+- 对于有position:absolute或z-index的元素，必须完全保留其HTML结构和所有属性
+- 图片元素（img、picture）及其所有父元素必须完整保留
+- **figure元素及其所有内容（包括img、figcaption等）必须完整保留，不能删除或修改**
+- 所有style属性和CSS类必须原样保留
+- **如果原文中有figure元素，翻译后的HTML中必须包含相同数量和结构的figure元素**
+
+请开始翻译：
+
+HTML内容：
+""" + body_html
+        
+        # Generate translation using gemini-3-pro-preview
+        logger.info(f"    {debug_info} Sending article body to Gemini (size: {len(body_html)} chars)...")
+        
+        # Log prompt for debugging (first 500 chars and last 500 chars)
+        prompt_preview = prompt[:500] + "\n... [truncated] ...\n" + prompt[-500:] if len(prompt) > 1000 else prompt
+        logger.info(f"    {debug_info} [DEBUG] Prompt preview (first/last 500 chars):\n{prompt_preview}")
+        logger.info(f"    {debug_info} [DEBUG] Full prompt size: {len(prompt)} chars, body_html size: {len(body_html)} chars")
+        
+        response = client.models.generate_content(
+            model="gemini-3-pro-preview",
+            contents=prompt
+        )
+        
+        # Check if response is valid
+        if not response:
+            logger.error("  Error: Empty response from Gemini API")
+            return None
+        
+        # Get text from response - handle different response formats
+        translated_html = None
+        try:
+            if hasattr(response, 'text') and response.text:
+                translated_html = response.text
+            elif hasattr(response, 'candidates') and len(response.candidates) > 0:
+                candidate = response.candidates[0]
+                if hasattr(candidate, 'content'):
+                    if hasattr(candidate.content, 'parts') and len(candidate.content.parts) > 0:
+                        translated_html = candidate.content.parts[0].text
+                    elif hasattr(candidate.content, 'text'):
+                        translated_html = candidate.content.text
+            else:
+                # Try to convert response to string
+                translated_html = str(response)
+        except Exception as e:
+            logger.error(f"  Error extracting text from response: {e}")
+            logger.error(f"  Response type: {type(response)}")
+            if hasattr(response, '__dict__'):
+                logger.error(f"  Response attributes: {list(response.__dict__.keys())}")
+            return None
+        
+        if not translated_html or len(translated_html.strip()) == 0:
+            logger.error("  Error: Translation result is empty")
+            return None
+        
+        logger.info(f"    {debug_info} Received translation (size: {len(translated_html)} chars)")
+        
+        # Log Gemini response for debugging (first 1000 chars and last 1000 chars)
+        response_preview = translated_html[:1000] + "\n... [truncated] ...\n" + translated_html[-1000:] if len(translated_html) > 2000 else translated_html
+        logger.info(f"    {debug_info} [DEBUG] Gemini response preview (first/last 1000 chars):\n{response_preview}")
+        
+        # Check paragraphs in Gemini response
+        from bs4 import BeautifulSoup
+        response_soup = BeautifulSoup(translated_html, 'html.parser')
+        response_paras = response_soup.find_all('p')
+        logger.info(f"    {debug_info} [DEBUG] Paragraphs in Gemini response: {len(response_paras)}")
+        if response_paras:
+            logger.info(f"    {debug_info} [DEBUG] First paragraph in response: {response_paras[0].get_text(strip=True)[:200]}...")
+        else:
+            logger.warning(f"    {debug_info} [DEBUG] WARNING: No paragraphs found in Gemini response!")
+            # Check what elements are in the response
+            all_elements = response_soup.find_all(True)
+            logger.info(f"    {debug_info} [DEBUG] Total elements in response: {len(all_elements)}")
+            if all_elements:
+                logger.info(f"    {debug_info} [DEBUG] Root element: <{all_elements[0].name}> with classes: {all_elements[0].get('class', [])}")
+        
+        # Clean up the response (sometimes Gemini adds markdown formatting)
+        # Remove markdown code blocks if present
+        if translated_html.startswith('```html'):
+            translated_html = translated_html[7:]
+        elif translated_html.startswith('```'):
+            translated_html = translated_html[3:]
+        if translated_html.endswith('```'):
+            translated_html = translated_html[:-3]
+        translated_html = translated_html.strip()
+        
+        # Verify we got substantial HTML content
+        if len(translated_html) < len(html_content) * 0.1:
+            logger.warning(f"  Warning: Translation seems too short ({len(translated_html)} vs original {len(html_content)} chars)")
+            logger.warning(f"  This might indicate the translation was truncated or incomplete")
+        
+        # Verify basic HTML structure
+        if not translated_html or len(translated_html.strip()) < 100:
+            logger.warning(f"  Warning: Translation result seems too short")
+            return None
+        
+        # Replace the original body with translated body in the full HTML
+        soup = BeautifulSoup(html_content, 'html.parser')
+        translated_body_soup = BeautifulSoup(translated_html, 'html.parser')
+        
+        # Use the body_element we found earlier (passed as a reference)
+        # We need to find it again in the soup since we created a new soup object
+        original_body = None
+        for selector in [('article', {}), ('.body__container', {}), ('.container--body-inner', {}), ('main', {})]:
+            if selector[0].startswith('.'):
+                original_body = soup.select_one(selector[0])
+            else:
+                tag_name = selector[0].split('.')[-1] if '.' in selector[0] else selector[0]
+                original_body = soup.find(tag_name, selector[1])
+            if original_body:
+                break
+        
+        if original_body:
+            # Log before replacement
+            original_paras = original_body.find_all('p')
+            original_figures = original_body.find_all('figure')
+            original_images = original_body.find_all('img')
+            logger.info(f"    {debug_info} [DEBUG] Original body has {len(original_paras)} paragraphs, {len(original_figures)} figures, {len(original_images)} images before replacement")
+            logger.info(f"    {debug_info} [DEBUG] Original body element: <{original_body.name}> with classes: {original_body.get('class', [])}")
+            
+            # Save original figures and images to restore them after translation
+            # (in case Gemini loses them)
+            original_figures_backup = []
+            for fig in original_figures:
+                # Create a deep copy of the figure element by serializing and re-parsing
+                # This ensures we have an independent copy that can be inserted later
+                fig_html = str(fig)
+                fig_soup = BeautifulSoup(fig_html, 'html.parser')
+                fig_copy = fig_soup.find('figure')
+                if fig_copy:
+                    original_figures_backup.append(fig_copy)
+            
+            # Replace the original body content with translated content
+            # Use a safer method: replace the inner HTML while preserving the element itself
+            translated_root = translated_body_soup.find()
+            if translated_root:
+                logger.info(f"    {debug_info} [DEBUG] Found translated_root: <{translated_root.name}> with classes: {translated_root.get('class', [])}")
+                # Check paragraphs in translated_root
+                translated_root_paras = translated_root.find_all('p')
+                logger.info(f"    {debug_info} [DEBUG] Paragraphs in translated_root: {len(translated_root_paras)}")
+                
+                # Find the corresponding body element in the translated HTML
+                # The translated_root is usually <article>, we need to find the body container inside it
+                translated_body = None
+                for selector in [('.body__container', {}), ('.container--body-inner', {}), ('main', {}), ('article', {})]:
+                    if selector[0].startswith('.'):
+                        translated_body = translated_root.select_one(selector[0])
+                    else:
+                        translated_body = translated_root.find(selector[0], selector[1])
+                    if translated_body:
+                        logger.info(f"    {debug_info} [DEBUG] Found translated_body: <{translated_body.name}> with classes: {translated_body.get('class', [])}")
+                        break
+                
+                # If we found a body container in translated HTML, use its content
+                # Otherwise, use the translated_root's content
+                if translated_body and translated_body != translated_root:
+                    # Get the inner HTML of the translated body container
+                    translated_inner = ''.join(str(child) for child in translated_body.children)
+                    logger.info(f"    {debug_info} [DEBUG] Using translated_body content, size: {len(translated_inner)} chars")
+                else:
+                    # Use the translated_root's inner content (skip the root element itself)
+                    translated_inner = ''.join(str(child) for child in translated_root.children)
+                    logger.info(f"    {debug_info} [DEBUG] Using translated_root content, size: {len(translated_inner)} chars")
+                
+                # Replace inner content while preserving the original element's attributes
+                original_body.clear()
+                # Parse and append the translated content
+                inner_soup = BeautifulSoup(translated_inner, 'html.parser')
+                inner_paras = inner_soup.find_all('p')
+                logger.info(f"    {debug_info} [DEBUG] Paragraphs in inner_soup: {len(inner_paras)}")
+                
+                # Append children - use list() to avoid issues with modifying while iterating
+                children_list = list(inner_soup.children)
+                logger.info(f"    {debug_info} [DEBUG] Appending {len(children_list)} children to original_body")
+                for child in children_list:
+                    original_body.append(child)
+            else:
+                logger.warning(f"    {debug_info} [DEBUG] No translated_root found, using fallback")
+                # Fallback: use the whole translated soup
+                original_body.clear()
+                for child in list(translated_body_soup.children):
+                    original_body.append(child)
+            
+            # Log after replacement
+            final_paras = original_body.find_all('p')
+            final_figures = original_body.find_all('figure')
+            final_images = original_body.find_all('img')
+            logger.info(f"    {debug_info} [DEBUG] Final body has {len(final_paras)} paragraphs, {len(final_figures)} figures, {len(final_images)} images after replacement")
+            
+            # Restore lost figures if any were lost
+            if len(original_figures_backup) > len(final_figures):
+                logger.warning(f"    {debug_info} [DEBUG] WARNING: {len(original_figures_backup) - len(final_figures)} figure(s) were lost during translation, restoring...")
+                # Find insertion point - use first paragraph or first child
+                insertion_point = original_body.find('p')
+                if not insertion_point:
+                    # If no paragraph, use first child
+                    children = list(original_body.children)
+                    if children:
+                        insertion_point = next((c for c in children if hasattr(c, 'name')), None)
+                
+                restored_count = 0
+                for fig_backup in original_figures_backup:
+                    # Check if this figure is already in the body
+                    # Use a more robust check: compare by image src if available
+                    fig_img = fig_backup.find('img')
+                    existing = None
+                    if fig_img:
+                        img_src = fig_img.get('src', '') or fig_img.get('data-src', '') or fig_img.get('data-lazy-src', '')
+                        if img_src:
+                            # Find figure with same image src
+                            for existing_fig in final_figures:
+                                existing_fig_img = existing_fig.find('img')
+                                if existing_fig_img:
+                                    existing_src = existing_fig_img.get('src', '') or existing_fig_img.get('data-src', '') or existing_fig_img.get('data-lazy-src', '')
+                                    if existing_src == img_src:
+                                        existing = existing_fig
+                                        break
+                    
+                    # If still not found, check by classes
+                    if not existing:
+                        fig_classes = fig_backup.get('class', [])
+                        if fig_classes:
+                            for existing_fig in final_figures:
+                                existing_classes = existing_fig.get('class', [])
+                                if existing_classes and set(fig_classes) == set(existing_classes):
+                                    existing = existing_fig
+                                    break
+                    
+                    if not existing:
+                        # Create a new soup from the figure HTML and insert it
+                        fig_html = str(fig_backup)
+                        fig_soup = BeautifulSoup(fig_html, 'html.parser')
+                        fig_to_insert = fig_soup.find('figure')
+                        if fig_to_insert:
+                            if insertion_point:
+                                # Insert before the insertion point
+                                insertion_point.insert_before(fig_to_insert)
+                            else:
+                                # Append to body
+                                original_body.append(fig_to_insert)
+                            restored_count += 1
+                            fig_classes = fig_backup.get('class', [])
+                            logger.info(f"    {debug_info} [DEBUG] Restored figure element {restored_count}/{len(original_figures_backup)} with classes: {fig_classes}")
+                
+                logger.info(f"    {debug_info} [DEBUG] Successfully restored {restored_count} figure(s)")
+            
+            if len(final_paras) == 0:
+                logger.warning(f"    {debug_info} [DEBUG] WARNING: Paragraphs were lost during replacement!")
+                # Debug: check what's actually in original_body now
+                body_text = original_body.get_text(strip=True)
+                logger.warning(f"    {debug_info} [DEBUG] Body text length: {len(body_text)} chars")
+                logger.warning(f"    {debug_info} [DEBUG] Body children count: {len(list(original_body.children))}")
+            
+            # Final check
+            final_figures_after_restore = original_body.find_all('figure')
+            final_images_after_restore = original_body.find_all('img')
+            logger.info(f"    {debug_info} [DEBUG] After restore: {len(final_figures_after_restore)} figures, {len(final_images_after_restore)} images")
+            
+            logger.info(f"    {debug_info} Replaced article body with translated version")
+            # Return the modified full HTML
+            return str(soup)
+        else:
+            # If we can't find the body element, try to use body_element directly
+            if body_element:
+                # Create a new soup from original and replace
+                soup = BeautifulSoup(html_content, 'html.parser')
+                # Find the element by its position or attributes
+                body_element.clear()
+                translated_root = translated_body_soup.find()
+                if translated_root:
+                    for child in list(translated_root.children):
+                        body_element.append(child)
+                return str(soup)
+            else:
+                logger.warning("  Warning: Could not locate body element for replacement")
+                return None
+        
+    except Exception as e:
+        logger.error(f"  Error translating with Gemini: {e}", exc_info=True)
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def translate_html_with_gemini_retry(html_content: str, api_key: Optional[str] = None, max_retries: int = 2, filename: Optional[str] = None) -> Optional[str]:
+    """Translate HTML with retry mechanism.
+    
+    Args:
+        html_content: Original HTML content
+        api_key: Gemini API key (if None, uses GEMINI_API_KEY env var)
+        max_retries: Maximum number of retries (default: 2, total attempts: 3)
+        filename: Optional filename for logging purposes
+    
+    Returns:
+        Translated HTML content, or None if all attempts fail
+    """
+    from datetime import datetime
+    
+    file_info = f" [{filename}]" if filename else ""
+    
+    for attempt in range(max_retries + 1):  # 0, 1, 2 = 3 attempts total
+        attempt_start = time.time()
+        attempt_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        if attempt > 0:
+            delay = random.uniform(5, 15)  # Wait 5-15 seconds before retry
+            logger.info(f"    [{attempt_time_str}]{file_info} Retry attempt {attempt}/{max_retries} after {delay:.1f}s delay...")
+            time.sleep(delay)
+        else:
+            logger.info(f"    [{attempt_time_str}]{file_info} Starting translation attempt {attempt + 1}/{max_retries + 1}...")
+        logger.info(f"    [{attempt_time_str}]{file_info} Calling translate_html_with_gemini (this may take several minutes)...")
+        
+        result = translate_html_with_gemini(html_content, api_key, debug_filename=filename)
+        attempt_elapsed = time.time() - attempt_start
+        logger.info(f"    [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]{file_info} translate_html_with_gemini returned (took {attempt_elapsed:.1f}s, {attempt_elapsed/60:.1f}min)")
+        
+        if result is not None:
+            if attempt > 0:
+                logger.info(f"    [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]{file_info} Translation succeeded on attempt {attempt + 1} (took {attempt_elapsed:.1f}s)")
+            else:
+                logger.info(f"    [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]{file_info} Translation succeeded on first attempt (took {attempt_elapsed:.1f}s)")
+            return result
+        else:
+                if attempt < max_retries:
+                    logger.warning(f"    [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]{file_info} Translation failed on attempt {attempt + 1}/{max_retries + 1} (took {attempt_elapsed:.1f}s), will retry...")
+                else:
+                    logger.error(f"    [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]{file_info} Translation failed after {max_retries + 1} attempts (last attempt took {attempt_elapsed:.1f}s), giving up")
+    
+    return None
+
+
+def _extract_article_body(html_content: str) -> tuple:
+    """Extract the main article body content from HTML.
+    
+    This is a helper function for backward compatibility.
+    Scrapers should implement their own extract_body method.
+    
+    Returns a tuple of (body_html, body_element) where body_html is the HTML
+    of the body section and body_element is the BeautifulSoup element.
+    """
+    soup = BeautifulSoup(html_content, 'html.parser')
+    
+    # Try to find article body using common selectors
+    body_element = None
+    
+    # Try different selectors for article body
+    selectors = [
+        ('article', {}),
+        ('.body__container', {}),
+        ('.container--body-inner', {}),
+        ('main', {}),
+        ('[class*="body"]', {}),
+        ('[class*="article"]', {}),
+        ('[class*="content"]', {}),
+    ]
+    
+    for selector, attrs in selectors:
+        if selector.startswith('['):
+            # Attribute selector
+            body_element = soup.select_one(selector)
+        else:
+            body_element = soup.find(selector.split('.')[-1] if '.' in selector else selector, attrs)
+        
+        if body_element:
+            # Check if it has substantial text content
+            text_content = body_element.get_text(strip=True)
+            if len(text_content) > 200:  # Has meaningful content
+                break
+    
+    if not body_element:
+        # Fallback: find the largest text-containing div
+        all_divs = soup.find_all(['div', 'section', 'article'])
+        max_text_length = 0
+        for div in all_divs:
+            text = div.get_text(strip=True)
+            if len(text) > max_text_length:
+                max_text_length = len(text)
+                body_element = div
+        
+        if max_text_length < 200:
+            return None, None
+    
+    return str(body_element), body_element

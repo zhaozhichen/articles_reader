@@ -1,335 +1,585 @@
-"""Translation service for article content."""
+"""New Yorker extraction/translation pipeline.
+
+核心流程：
+- DOM 剥离：找到正文容器，给需要翻译的块级文本节点打 data-translate-id。
+- 序列化：将纯文本抽取成 JSON list（id + text），保留顺序。
+- 上下文感知翻译：先做风格解析，再按批次翻译 JSON。
+- 反序列化注入：按 id 把译文写回原 DOM，保持布局与媒体位置不变。
+"""
+
+import json
+import logging
 import os
 import random
+import re
 import time
-import sys
-from typing import Optional
-from bs4 import BeautifulSoup
+from typing import Dict, List, Optional, Sequence, Tuple
+
+from bs4 import BeautifulSoup, Tag
 
 try:
     from google import genai
+
     GEMINI_AVAILABLE = True
-except ImportError:
+except ImportError:  # pragma: no cover - optional dependency
     GEMINI_AVAILABLE = False
 
+logger = logging.getLogger(__name__)
+# Ensure this module logs even when called from standalone scripts.
+logger.setLevel(logging.INFO)
 
-def translate_html_with_gemini(html_content: str, api_key: Optional[str] = None) -> Optional[str]:
-    """Translate only the article body content to Simplified Chinese using Gemini 3 Pro.
+
+def _ensure_logger_handlers() -> None:
+    """Attach handlers if this logger has none (handles scripts with propagate=False)."""
+    if logger.handlers:
+        return
+
+    # Try known script/app loggers first
+    for name in ("extract_articles", "app.routers.articles", "app"):
+        cand = logging.getLogger(name)
+        if cand.handlers:
+            for h in cand.handlers:
+                logger.addHandler(h)
+            logger.propagate = False
+            return
+
+    # If root has handlers, allow propagation
+    root = logging.getLogger()
+    if root.handlers:
+        logger.propagate = True
+        return
+
+    # Fallback: basicConfig
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+# Ensure this module logs at INFO even if caller only configures root at runtime
+logger.setLevel(logging.INFO)
+# Ensure logging works when called from scripts that don't configure root handlers
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+
+# --------- Tunables --------- #
+STYLE_MODEL_DEFAULT = "gemini-3-pro-preview"
+TRANSLATE_MODEL_DEFAULT = "gemini-3-pro-preview"
+STYLE_SAMPLE_CHARS = 8000  # 用于风格分析的字符上限
+CHUNK_CHAR_LIMIT = 15000  # 每个翻译批次的字符上限
+
+# Debug flag: 跳过 Gemini 翻译，使用 placeholder 中文（用于测试排版）
+# 设置为 True 时跳过 Gemini API 调用，使用占位符中文测试排版
+SKIP_GEMINI_TRANSLATION = True  # 手动修改为 True 以启用调试模式
+
+# 只翻译这些块级节点，忽略脚注/广告等噪音
+TARGET_TAGS = ("p", "h1", "h2", "h3", "h4", "h5", "h6", "figcaption", "li")
+SKIP_CLASS_KEYWORDS = (
+    "rubric",
+    "newsletter",
+    "subscribe",
+    "paywall",
+    "promo",
+    "related",
+    "footer",
+    "comment",
+    "credit",
+    "caption__credit",
+    "ad",
+)
+
+
+# --------- Public API --------- #
+def translate_newyorker_html(
+    html_content: str,
+    api_key: Optional[str] = None,
+    style_model: str = STYLE_MODEL_DEFAULT,
+    translate_model: str = TRANSLATE_MODEL_DEFAULT,
+    style_sample_chars: int = STYLE_SAMPLE_CHARS,
+    chunk_char_limit: int = CHUNK_CHAR_LIMIT,
+) -> Optional[str]:
+    """End-to-end pipeline: extract -> style -> translate -> inject.
+
+    Returns translated full HTML (same DOM结构) or None on failure.
     
-    Only translates the main article body, keeping navigation, scripts, styles, etc. in English.
-    
-    Args:
-        html_content: Original HTML content
-        api_key: Gemini API key (if None, uses GEMINI_API_KEY env var)
-    
-    Returns:
-        Translated HTML content with only body translated, or None if translation fails
+    If SKIP_GEMINI_TRANSLATION is set, uses placeholder Chinese text instead.
     """
-    if not GEMINI_AVAILABLE:
-        print("  Warning: google.genai not installed. Install with: pip install google-genai", file=sys.stderr)
-        return None
-    
-    # Get API key (the client gets it from GEMINI_API_KEY env var automatically)
-    # But we can check if it's set
-    if api_key is None:
-        api_key = os.getenv('GEMINI_API_KEY')
-    
-    if not api_key:
-        print("  Warning: GEMINI_API_KEY not set. Skipping translation.", file=sys.stderr)
-        return None
+    _ensure_logger_handlers()
+    logger.info("translate_newyorker_html called. SKIP_GEMINI_TRANSLATION = %s", SKIP_GEMINI_TRANSLATION)
     
     try:
-        # Extract article body - this should be done by the caller, but we'll try to find it
-        # The caller should pass body_html separately, but for backward compatibility we extract here
-        print("    Extracting article body content...", file=sys.stderr)
-        body_html, body_element = _extract_article_body(html_content)
-        
-        if not body_html or not body_element:
-            print("  Warning: Could not find article body content", file=sys.stderr)
-            return None
-        
-        body_size = len(body_html)
-        print(f"    Found article body (size: {body_size} chars)", file=sys.stderr)
-        
-        # Maximum size for single translation
-        MAX_SINGLE_TRANSLATION = 200000
-        
-        # Check if body is too long to translate
-        if body_size > MAX_SINGLE_TRANSLATION:
-            print(f"    Article body is too long ({body_size:,} chars), skipping translation and showing placeholder", file=sys.stderr)
-            soup = BeautifulSoup(html_content, 'html.parser')
-            
-            # Find the body element to replace
-            original_body = None
-            for selector in [('article', {}), ('.body__container', {}), ('.container--body-inner', {}), ('main', {})]:
-                if selector[0].startswith('.'):
-                    original_body = soup.select_one(selector[0])
-                else:
-                    tag_name = selector[0].split('.')[-1] if '.' in selector[0] else selector[0]
-                    original_body = soup.find(tag_name, selector[1])
-                if original_body:
-                    break
-            
-            if original_body:
-                # Create placeholder message with size information
-                placeholder_html = f'<div style="padding: 2rem; text-align: center; font-family: Arial, sans-serif;"><p style="font-size: 18px; color: #666;">文章过长，无法翻译</p><p style="font-size: 14px; color: #999; margin-top: 1rem;">Article too long to translate, size: {body_size:,} characters</p></div>'
-                placeholder_soup = BeautifulSoup(placeholder_html, 'html.parser')
-                
-                # Replace body content with placeholder
-                original_body.clear()
-                original_body.append(placeholder_soup.find('div'))
-                
-                return str(soup)
-            else:
-                # If we can't find the body, return original HTML with a note
-                print("  Warning: Could not locate body element for placeholder insertion", file=sys.stderr)
+        logger.debug("Calling extract_content_for_translation...")
+        soup, payload = extract_content_for_translation(html_content)
+        logger.info("Extracted %d text nodes from HTML.", len(payload) if payload else 0)
+        if not payload:
+            logger.warning("No translatable content found in HTML.")
+            if SKIP_GEMINI_TRANSLATION:
+                logger.info("No payload but placeholder mode active; returning original HTML.")
                 return html_content
-        
-        # The client gets the API key from the environment variable `GEMINI_API_KEY`
-        client = genai.Client()
-        
-        # Create prompt for translation
-        prompt = """请将以下HTML内容翻译成简体中文。
-
-翻译流程：
-第一步：仔细阅读全文
-- 先完整阅读整篇文章，理解文章的主题、内容和结构
-- 分析文章的行文风格（正式、轻松、学术、新闻等）
-- 识别文章的语气和语调（严肃、幽默、批判、客观等）
-- 注意文章的文体特征（叙述、议论、描写等）
-- 理解文章的语境和背景
-
-第二步：进行翻译
-- 基于对文章风格和语气的理解，进行翻译
-- 确保翻译非常流畅，完全符合现代汉语的写作习惯
-- 使用自然、地道的现代汉语表达
-- 避免生硬的直译，要意译为主，确保可读性
-- 保持原文的风格和语气特征
-- 专业术语要准确，但表达要符合中文习惯
-
-技术性要求（非常重要）：
-1. **只翻译文本内容**，保留所有HTML标签、属性和结构完全不变
-2. **保留所有元素**：包括所有div、section、article、picture、img、style、script等元素
-3. **保留所有属性**：包括class、id、style、data-*、src、srcset等所有属性
-4. **保留所有CSS**：包括内联样式（style属性）和所有CSS类名
-5. **保留所有图片和媒体**：不要移动、删除或修改任何图片、视频等媒体元素
-6. **保留定位信息**：保持所有position、z-index、absolute、relative等CSS定位属性
-7. **不翻译代码、URL或技术属性**：只翻译可见的文本内容
-8. **保持HTML结构完全不变**：元素顺序、嵌套关系、空白字符都要保持原样
-9. 返回完整的翻译后的HTML（只包含这个body部分的HTML）
-
-特别注意：
-- 对于有position:absolute或z-index的元素，必须完全保留其HTML结构和所有属性
-- 图片元素（img、picture）及其所有父元素必须完整保留
-- 所有style属性和CSS类必须原样保留
-
-请开始翻译：
-
-HTML内容：
-""" + body_html
-        
-        # Generate translation using gemini-3-pro-preview
-        print(f"    Sending article body to Gemini (size: {len(body_html)} chars)...", file=sys.stderr)
-        
-        response = client.models.generate_content(
-            model="gemini-3-pro-preview",
-            contents=prompt
-        )
-        
-        # Check if response is valid
-        if not response:
-            print("  Error: Empty response from Gemini API", file=sys.stderr)
             return None
-        
-        # Get text from response - handle different response formats
-        translated_html = None
-        try:
-            if hasattr(response, 'text') and response.text:
-                translated_html = response.text
-            elif hasattr(response, 'candidates') and len(response.candidates) > 0:
-                candidate = response.candidates[0]
-                if hasattr(candidate, 'content'):
-                    if hasattr(candidate.content, 'parts') and len(candidate.content.parts) > 0:
-                        translated_html = candidate.content.parts[0].text
-                    elif hasattr(candidate.content, 'text'):
-                        translated_html = candidate.content.text
-            else:
-                # Try to convert response to string
-                translated_html = str(response)
-        except Exception as e:
-            print(f"  Error extracting text from response: {e}", file=sys.stderr)
-            print(f"  Response type: {type(response)}", file=sys.stderr)
-            if hasattr(response, '__dict__'):
-                print(f"  Response attributes: {list(response.__dict__.keys())}", file=sys.stderr)
+
+        # Debug mode: 跳过 Gemini，使用 placeholder
+        if SKIP_GEMINI_TRANSLATION:
+            logger.info("SKIP_GEMINI_TRANSLATION is enabled. Using placeholder Chinese text for layout testing.")
+            logger.info("Extracted %d text nodes for placeholder translation.", len(payload))
+            try:
+                translated_items = _generate_placeholder_translations(payload)
+                logger.info("Generated %d placeholder translations.", len(translated_items))
+                translated_html = inject_translations(soup, translated_items)
+                logger.info("Successfully injected placeholder translations into DOM. HTML length: %d chars", len(translated_html))
+                return translated_html
+            except Exception as exc:
+                logger.error("Error in placeholder mode: %s", exc, exc_info=True)
             return None
-        
-        if not translated_html or len(translated_html.strip()) == 0:
-            print("  Error: Translation result is empty", file=sys.stderr)
-            return None
-        
-        print(f"    Received translation (size: {len(translated_html)} chars)", file=sys.stderr)
-        
-        # Clean up the response (sometimes Gemini adds markdown formatting)
-        # Remove markdown code blocks if present
-        if translated_html.startswith('```html'):
-            translated_html = translated_html[7:]
-        elif translated_html.startswith('```'):
-            translated_html = translated_html[3:]
-        if translated_html.endswith('```'):
-            translated_html = translated_html[:-3]
-        translated_html = translated_html.strip()
-        
-        # Verify we got substantial HTML content
-        if len(translated_html) < len(html_content) * 0.1:
-            print(f"  Warning: Translation seems too short ({len(translated_html)} vs original {len(html_content)} chars)", file=sys.stderr)
-            print(f"  This might indicate the translation was truncated or incomplete", file=sys.stderr)
-        
-        # Verify basic HTML structure
-        if not translated_html or len(translated_html.strip()) < 100:
-            print(f"  Warning: Translation result seems too short", file=sys.stderr)
-            return None
-        
-        # Replace the original body with translated body in the full HTML
-        soup = BeautifulSoup(html_content, 'html.parser')
-        translated_body_soup = BeautifulSoup(translated_html, 'html.parser')
-        
-        # Use the body_element we found earlier (passed as a reference)
-        # We need to find it again in the soup since we created a new soup object
-        original_body = None
-        for selector in [('article', {}), ('.body__container', {}), ('.container--body-inner', {}), ('main', {})]:
-            if selector[0].startswith('.'):
-                original_body = soup.select_one(selector[0])
-            else:
-                tag_name = selector[0].split('.')[-1] if '.' in selector[0] else selector[0]
-                original_body = soup.find(tag_name, selector[1])
-            if original_body:
-                break
-        
-        if original_body:
-            # Replace the original body content with translated content
-            # Use a safer method: replace the inner HTML while preserving the element itself
-            translated_root = translated_body_soup.find()
-            if translated_root:
-                # Get the inner HTML of translated root (preserves all structure)
-                translated_inner = ''.join(str(child) for child in translated_root.children)
-                # Replace inner content while preserving the original element's attributes
-                original_body.clear()
-                # Parse and append the translated content
-                inner_soup = BeautifulSoup(translated_inner, 'html.parser')
-                for child in inner_soup.children:
-                    original_body.append(child)
-            else:
-                # Fallback: use the whole translated soup
-                original_body.clear()
-                for child in list(translated_body_soup.children):
-                    original_body.append(child)
-            
-            print(f"    Replaced article body with translated version", file=sys.stderr)
-            # Return the modified full HTML
-            return str(soup)
-        else:
-            # If we can't find the body element, try to use body_element directly
-            if body_element:
-                # Create a new soup from original and replace
-                soup = BeautifulSoup(html_content, 'html.parser')
-                # Find the element by its position or attributes
-                body_element.clear()
-                translated_root = translated_body_soup.find()
-                if translated_root:
-                    for child in list(translated_root.children):
-                        body_element.append(child)
-                return str(soup)
-            else:
-                print("  Warning: Could not locate body element for replacement", file=sys.stderr)
-                return None
-        
-    except Exception as e:
-        print(f"  Error translating with Gemini: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc()
+    except Exception as exc:
+        logger.error("Error in translate_newyorker_html (extraction/debug mode): %s", exc, exc_info=True)
         return None
 
+    # Normal mode: 使用 Gemini 翻译
+    if not GEMINI_AVAILABLE:
+        logger.warning("google.genai not installed. Install with: pip install google-genai")
+        return None
+    
+    if api_key is None:
+        api_key = os.getenv("GEMINI_API_KEY")
+    
+    if not api_key:
+        logger.warning("GEMINI_API_KEY not set. Skipping translation.")
+        return None
+    
+    client = genai.Client(api_key=api_key)
 
-def translate_html_with_gemini_retry(html_content: str, api_key: Optional[str] = None, max_retries: int = 2) -> Optional[str]:
-    """Translate HTML with retry mechanism.
-    
-    Args:
-        html_content: Original HTML content
-        api_key: Gemini API key (if None, uses GEMINI_API_KEY env var)
-        max_retries: Maximum number of retries (default: 2, total attempts: 3)
-    
-    Returns:
-        Translated HTML content, or None if all attempts fail
-    """
-    for attempt in range(max_retries + 1):  # 0, 1, 2 = 3 attempts total
-        if attempt > 0:
-            delay = random.uniform(5, 15)  # Wait 5-15 seconds before retry
-            print(f"    Retry attempt {attempt}/{max_retries} after {delay:.1f}s delay...", file=sys.stderr)
-            time.sleep(delay)
+    style_corpus = build_style_corpus(payload, style_sample_chars)
+    style_notes = request_style_profile(client, style_corpus, style_model)
+
+    translated_items = translate_payload_in_batches(
+        client=client,
+        payload=payload,
+        style_notes=style_notes,
+        model=translate_model,
+        chunk_char_limit=chunk_char_limit,
+    )
+
+    if not translated_items:
+        logger.error("Translation failed or returned empty payload.")
+        return None
         
-        result = translate_html_with_gemini(html_content, api_key)
-        if result is not None:
-            if attempt > 0:
-                print(f"    Translation succeeded on attempt {attempt + 1}", file=sys.stderr)
-            return result
-        else:
-            if attempt < max_retries:
-                print(f"    Translation failed on attempt {attempt + 1}/{max_retries + 1}, will retry...", file=sys.stderr)
-            else:
-                print(f"    Translation failed after {max_retries + 1} attempts, giving up", file=sys.stderr)
+    translated_html = inject_translations(soup, translated_items)
+    return translated_html
+
+
+# --------- Extraction --------- #
+def extract_content_for_translation(html_content: str) -> Tuple[BeautifulSoup, List[Dict[str, str]]]:
+    """Parse HTML, locate article root, mark target nodes with ids, and serialize text."""
+    soup = BeautifulSoup(html_content, "html.parser")
+    article_root = _find_article_root(soup)
+
+    if not article_root:
+        logger.warning("Could not locate likely article container; using <body> as fallback.")
+        article_root = soup.body or soup
+
+    payload: List[Dict[str, str]] = []
+    node_id = 0
+
+    def collect_nodes(root: Tag, start_id: int) -> Tuple[List[Dict[str, str]], int]:
+        collected: List[Dict[str, str]] = []
+        idx = start_id
+        for tag in root.find_all(TARGET_TAGS):
+            if _should_skip(tag):
+                continue
+            text = tag.get_text(strip=True)
+            if not text:
+                continue
+            tag["data-translate-id"] = str(idx)
+            collected.append(
+                {
+                    "id": str(idx),
+                    "text": text,
+                    "tag": tag.name,
+                }
+            )
+            idx += 1
+        return collected, idx
+
+    payload, node_id = collect_nodes(article_root, node_id)
+
+    if not payload:
+        logger.info("Primary article root yielded 0 nodes; falling back to full-document scan.")
+        payload, node_id = collect_nodes(soup, 0)
+        logger.info("Fallback full-document scan found %d nodes.", len(payload))
+
+    if not payload:
+        logger.warning("Fallback scan still found 0 nodes; running last-resort <p> scan without skip filter.")
+        for tag in soup.find_all("p"):
+            text = tag.get_text(strip=True)
+            if not text:
+                continue
+            tag["data-translate-id"] = str(node_id)
+            payload.append(
+                {
+                    "id": str(node_id),
+                    "text": text,
+                    "tag": tag.name,
+                }
+            )
+            node_id += 1
+        logger.info("Last-resort scan found %d nodes.", len(payload))
+
+    # Debug aids: total <p> count and first snippet
+    total_p = len(soup.find_all("p"))
+    logger.debug("Total <p> tags in document: %d", total_p)
+    if payload:
+        logger.debug("First extracted text snippet: %s", payload[0]["text"][:200])
+        logger.debug("First 5 extracted nodes: %s", [{"id": p["id"], "tag": p["tag"], "text_preview": p["text"][:50]} for p in payload[:5]])
+
+    logger.info("Extracted %d text nodes for translation.", len(payload))
+    return soup, payload
+
+
+def _find_article_root(soup: BeautifulSoup) -> Optional[Tag]:
+    """Heuristic search for New Yorker body container."""
+    candidates: List[Optional[Tag]] = [
+        soup.find("article"),
+        soup.select_one("main[role=main]"),
+        soup.find("main"),
+        soup.select_one("div[data-article]"),
+        soup.select_one("div[data-content]"),
+        soup.find("div", id=re.compile(r"article", re.I)),
+        soup.find("div", class_=re.compile(r"article", re.I)),
+        soup.find("div", class_=re.compile(r"content", re.I)),
+        soup.find("section", class_=re.compile(r"article", re.I)),
+        soup.find("section", class_=re.compile(r"body", re.I)),
+    ]
+
+    for cand in candidates:
+        if cand and len(cand.get_text(strip=True)) > 50:
+            return cand
+
+    # Fallback: largest text block
+    best: Optional[Tag] = None
+    max_len = 0
+    for block in soup.find_all(["article", "section", "div"]):
+        text_len = len(block.get_text(strip=True))
+        if text_len > max_len:
+            max_len = text_len
+            best = block
+    if best:
+        return best
+    return soup.body or soup
+
+
+def _should_skip(tag: Tag) -> bool:
+    """Check if a tag should be skipped during extraction.
     
+    Uses word-boundary matching to avoid false positives (e.g., 'has-dropcap' containing 'ad').
+    For 'paywall' class, only skip if it's a short subscription message, not actual article content.
+    """
+    classes = tag.get("class", [])
+    text = tag.get_text(strip=True)
+    text_lower = text.lower()
+    
+    # Special handling for 'paywall' class: only skip if it's a short subscription message
+    # New Yorker uses 'paywall' class on actual article paragraphs, not just subscription prompts
+    if "paywall" in [c.lower() for c in classes]:
+        # Skip only if it's a short message that looks like a subscription prompt
+        is_short = len(text) < 100
+        is_subscribe_msg = any(keyword in text_lower for keyword in [
+            "subscribe", "sign up", "read more", "unlock", "become a subscriber",
+            "get unlimited access", "already a subscriber"
+        ])
+        if is_short and is_subscribe_msg:
+            return True
+        # Otherwise, it's likely actual article content, don't skip
+        # (fall through to check other skip conditions)
+    
+    # Check each class name individually for exact or prefix/suffix matches
+    # This avoids false positives like 'has-dropcap' matching 'ad'
+    for class_name in classes:
+        class_lower = class_name.lower()
+        for keyword in SKIP_CLASS_KEYWORDS:
+            # Skip 'paywall' keyword check here since we handled it above
+            if keyword == "paywall":
+                continue
+            # Special handling for 'credit' and 'caption__credit': only skip if it's a short credit line
+            # Long text with 'credit' class might be actual content (like image captions)
+            if keyword in ("credit", "caption__credit"):
+                if len(text) < 30:  # Short credit lines
+                    if class_lower == keyword or class_lower.endswith("_" + keyword):
+                        return True
+                continue
+            # Exact match
+            if class_lower == keyword:
+                return True
+            # Match as prefix (e.g., 'ad-banner', 'ad-wrapper')
+            if class_lower.startswith(keyword + "-") or class_lower.startswith(keyword + "_"):
+                return True
+            # Match as suffix (e.g., 'banner-ad', 'wrapper-ad')
+            if class_lower.endswith("-" + keyword) or class_lower.endswith("_" + keyword):
+                return True
+    
+    if tag.name == "p" and len(text) < 2:
+        return True
+    return False
+
+
+# --------- Style analysis --------- #
+def build_style_corpus(payload: Sequence[Dict[str, str]], char_limit: int) -> str:
+    """Join text for style analysis, capped to char_limit."""
+    parts: List[str] = []
+    total = 0
+    for item in payload:
+        text = item["text"].strip()
+        if not text:
+            continue
+        if total + len(text) > char_limit:
+            remaining = max(char_limit - total, 0)
+            if remaining > 0:
+                parts.append(text[:remaining])
+                break
+        parts.append(text)
+        total += len(text)
+    return "\n".join(parts)
+
+
+def request_style_profile(client: "genai.Client", corpus: str, model: str) -> str:
+    """Ask Gemini to summarize the style; fallback to empty string if it fails."""
+    if not corpus:
+        return ""
+
+    prompt = (
+        "你是一位精通中英的资深编辑，熟悉《纽约客》的写作风格。"
+        "请阅读以下文章文本片段，总结 3-5 个中文 bullet，描述节奏、句法、口吻、幽默感、叙述视角等。"
+        "仅输出风格要点，不要翻译原文。\n\n"
+        f"文章片段：\n{corpus}"
+    )
+
+    try:
+        response_text = _generate_text(client, model, prompt)
+        logger.info("Style profile generated.")
+        return response_text.strip()
+    except Exception as exc:  # pragma: no cover - network path
+        logger.warning("Style profile request failed: %s", exc)
+        return ""
+
+
+# --------- Translation --------- #
+def translate_payload_in_batches(
+    client: "genai.Client",
+    payload: Sequence[Dict[str, str]],
+    style_notes: str,
+    model: str,
+    chunk_char_limit: int,
+) -> List[Dict[str, str]]:
+    """Chunk payload by character budget and translate each batch."""
+    batches: List[List[Dict[str, str]]] = []
+    current: List[Dict[str, str]] = []
+    current_len = 0
+
+    for item in payload:
+        item_len = len(item["text"])
+        if current and current_len + item_len > chunk_char_limit:
+            batches.append(current)
+            current = []
+            current_len = 0
+        current.append(item)
+        current_len += item_len
+    if current:
+        batches.append(current)
+
+    results: List[Dict[str, str]] = []
+    for idx, batch in enumerate(batches):
+        logger.info("Translating batch %d/%d (size: %d chars).", idx + 1, len(batches), sum(len(i["text"]) for i in batch))
+        prompt = _build_translation_prompt(batch, style_notes)
+        response_text = _generate_text(client, model, prompt)
+        batch_result = _parse_translation_response(response_text)
+        if not batch_result:
+            raise RuntimeError("Empty translation batch result.")
+        results.extend(batch_result)
+
+    return results
+
+
+def _build_translation_prompt(batch: Sequence[Dict[str, str]], style_notes: str) -> str:
+    style_block = style_notes or "保持《纽约客》特有的知性、冷静、长句叙事风格。"
+    return (
+        "你是《纽约客》中文创译编辑。请先理解整体风格，再按 JSON 翻译。"
+        "翻译原则：信达雅，保持长句节奏，避免直译腔，术语前后一致，避免口语化。"
+        f"\n\n风格参考（中文要点）：\n{style_block}\n"
+        "\n输出要求：\n"
+        "- 只输出 JSON list（无 Markdown、无额外解释）。\n"
+        '- 每个对象字段：{"id": <string>, "translated": <string>}。\n'
+        "- 保留原顺序，id 原样返回。\n"
+        "- 只翻译 text 字段内容，别增加或省略节点。\n"
+        "\n待翻译 JSON：\n"
+        f"{json.dumps(batch, ensure_ascii=False)}"
+    )
+
+
+def _generate_text(client: "genai.Client", model: str, prompt: str) -> str:
+    """Call Gemini and normalize text output."""
+    response = client.models.generate_content(model=model, contents=prompt)
+    if not response:
+        raise RuntimeError("Empty response from Gemini.")
+
+    if hasattr(response, "text") and response.text:
+        text = response.text
+    elif hasattr(response, "candidates") and response.candidates:
+        candidate = response.candidates[0]
+        parts = getattr(getattr(candidate, "content", None), "parts", None)
+        if parts and parts[0].text:
+            text = parts[0].text
+        else:
+            text = str(response)
+
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("```", 2)[-1]
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3]
+    return cleaned.strip()
+
+
+def _parse_translation_response(raw: str) -> List[Dict[str, str]]:
+    """Parse JSON list from model output."""
+    cleaned = raw.strip()
+    if cleaned.startswith("json"):
+        cleaned = cleaned[4:].strip()
+
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    match = re.search(r"\[.*\]", cleaned, flags=re.S)
+    if match:
+        return json.loads(match.group(0))
+
+    raise ValueError("Model response is not valid JSON.")
+
+
+def _generate_placeholder_translations(payload: Sequence[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Generate placeholder Chinese text for debugging layout.
+    
+    Returns a list with same structure as real translation, but with placeholder text.
+    """
+    placeholders = []
+    for idx, item in enumerate(payload):
+        tag_name = item.get("tag", "p")
+        original_len = len(item.get("text", ""))
+        
+        # 根据标签类型生成不同的 placeholder
+        if tag_name.startswith("h"):
+            placeholder_text = f"【标题 {idx + 1}】这是占位符中文标题，用于测试排版效果。原始长度：{original_len} 字符。"
+        elif tag_name == "figcaption":
+            placeholder_text = f"【图片说明 {idx + 1}】这是占位符中文图片说明，用于测试排版效果。原始长度：{original_len} 字符。"
+        elif tag_name == "li":
+            placeholder_text = f"【列表项 {idx + 1}】这是占位符中文列表项，用于测试排版效果。原始长度：{original_len} 字符。"
+        else:
+            placeholder_text = f"【段落 {idx + 1}】这是占位符中文段落，用于测试排版效果。原始长度：{original_len} 字符。"
+        
+        placeholders.append({
+            "id": item["id"],
+            "translated": placeholder_text
+        })
+    
+    return placeholders
+
+
+# --------- Injection --------- #
+def inject_translations(soup: BeautifulSoup, translated_items: Sequence[Dict[str, str]]) -> str:
+    """Write translated text back to DOM using data-translate-id."""
+    lookup: Dict[str, str] = {item["id"]: item["translated"] for item in translated_items if "translated" in item}
+    nodes = soup.find_all(attrs={"data-translate-id": True})
+
+    logger.debug("Found %d nodes with data-translate-id, lookup has %d items", len(nodes), len(lookup))
+    
+    replaced = 0
+    for node in nodes:
+        node_id = node.get("data-translate-id")
+        if node_id is None:
+            logger.debug("Node has data-translate-id attribute but value is None")
+            continue
+        if node_id not in lookup:
+            logger.debug("Node ID %s not found in lookup", node_id)
+            continue
+        
+        # Store original text for debugging
+        original_text = node.get_text(strip=True)
+        
+        # Clear all children and set new text content
+        # This works even if node has nested elements
+        node.clear()
+        node.append(lookup[node_id])
+        del node["data-translate-id"]
+        replaced += 1
+        
+        # Debug: log first few replacements
+        if replaced <= 3:
+            logger.debug("Replaced node %s: '%s' -> '%s'", node_id, original_text[:50], lookup[node_id][:50])
+
+    logger.info("Injected %d translated nodes back into DOM.", replaced)
+    return str(soup)
+
+
+# --------- Backward compatibility wrappers --------- #
+def translate_html_with_gemini(html_content: str, api_key: Optional[str] = None, debug_filename: Optional[str] = None) -> Optional[str]:
+    """Legacy entrypoint kept for existing callers."""
+    debug_tag = f" [{debug_filename}]" if debug_filename else ""
+    try:
+        logger.info("%s Dispatching to translate_newyorker_html pipeline.", debug_tag)
+        return translate_newyorker_html(html_content, api_key=api_key)
+    except Exception as exc:  # pragma: no cover - network path
+        logger.error("translate_html_with_gemini failed%s: %s", debug_tag, exc, exc_info=True)
     return None
 
 
-def _extract_article_body(html_content: str) -> tuple:
-    """Extract the main article body content from HTML.
-    
-    This is a helper function for backward compatibility.
-    Scrapers should implement their own extract_body method.
-    
-    Returns a tuple of (body_html, body_element) where body_html is the HTML
-    of the body section and body_element is the BeautifulSoup element.
-    """
-    soup = BeautifulSoup(html_content, 'html.parser')
-    
-    # Try to find article body using common selectors
-    body_element = None
-    
-    # Try different selectors for article body
-    selectors = [
-        ('article', {}),
-        ('.body__container', {}),
-        ('.container--body-inner', {}),
-        ('main', {}),
-        ('[class*="body"]', {}),
-        ('[class*="article"]', {}),
-        ('[class*="content"]', {}),
-    ]
-    
-    for selector, attrs in selectors:
-        if selector.startswith('['):
-            # Attribute selector
-            body_element = soup.select_one(selector)
-        else:
-            body_element = soup.find(selector.split('.')[-1] if '.' in selector else selector, attrs)
-        
-        if body_element:
-            # Check if it has substantial text content
-            text_content = body_element.get_text(strip=True)
-            if len(text_content) > 200:  # Has meaningful content
-                break
-    
-    if not body_element:
-        # Fallback: find the largest text-containing div
-        all_divs = soup.find_all(['div', 'section', 'article'])
-        max_text_length = 0
-        for div in all_divs:
-            text = div.get_text(strip=True)
-            if len(text) > max_text_length:
-                max_text_length = len(text)
-                body_element = div
-        
-        if max_text_length < 200:
-            return None, None
-    
-    return str(body_element), body_element
+def translate_html_with_gemini_retry(
+    html_content: str,
+    api_key: Optional[str] = None,
+    max_retries: int = 2,
+    filename: Optional[str] = None,
+) -> Optional[str]:
+    """Retry wrapper compatible with previous interface."""
+    _ensure_logger_handlers()
+    tag = f" [{filename}]" if filename else ""
+    try:
+        logger.info("%s translate_html_with_gemini_retry called", tag)
+        logger.info("%s Checking SKIP_GEMINI_TRANSLATION flag (current value: %s)", tag, SKIP_GEMINI_TRANSLATION)
+        logger.debug("%s HTML content length: %d chars", tag, len(html_content))
+
+        if SKIP_GEMINI_TRANSLATION:
+            logger.info("%s SKIP_GEMINI_TRANSLATION is True - will use placeholder mode (no retries needed).", tag)
+            result = translate_newyorker_html(html_content, api_key=api_key)
+            logger.debug("%s translate_newyorker_html returned: %s, length: %d", tag, type(result).__name__, len(result) if result else 0)
+            if result is None:
+                logger.error("%s Placeholder translation returned None - check logs above for errors.", tag)
+            else:
+                logger.info("%s Placeholder translation succeeded, returned HTML length: %d chars", tag, len(result) if result else 0)
+            return result
+
+        # Normal mode with retries
+        for attempt in range(max_retries + 1):
+            start = time.time()
+            if attempt:
+                delay = random.uniform(5, 12)
+                logger.info("%s Retry %d/%d after %.1fs pause.", tag, attempt + 1, max_retries + 1, delay)
+                time.sleep(delay)
+
+            logger.info("%s Starting attempt %d/%d.", tag, attempt + 1, max_retries + 1)
+            result = translate_newyorker_html(html_content, api_key=api_key)
+            elapsed = time.time() - start
+            logger.info("%s Attempt %d finished in %.1fs.", tag, attempt + 1, elapsed)
+            if result is not None:
+                return result
+
+        logger.error("%s Translation failed after %d attempts.", tag, max_retries + 1)
+        return None
+
+    except Exception as exc:
+        logger.error("%s Unexpected exception in translate_html_with_gemini_retry: %s", tag, exc, exc_info=True)
+        return None
+

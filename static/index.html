@@ -752,8 +752,8 @@
                 <input type="date" id="logDate" />
                 <label>行数:</label>
                 <select id="logLines">
-                    <option value="100">100</option>
-                    <option value="500" selected>500</option>
+                    <option value="100" selected>100</option>
+                    <option value="500">500</option>
                     <option value="1000">1000</option>
                     <option value="2000">2000</option>
                     <option value="5000">5000</option>
@@ -1330,7 +1330,16 @@
                     body: JSON.stringify({ url: url })
                 });
 
-                const data = await response.json();
+                // Check if response is JSON before parsing
+                const contentType = response.headers.get('content-type');
+                let data;
+                if (contentType && contentType.includes('application/json')) {
+                    data = await response.json();
+                } else {
+                    // If not JSON, read as text to get error message
+                    const text = await response.text();
+                    throw new Error(`服务器返回了非JSON响应: ${text.substring(0, 200)}`);
+                }
 
                 if (response.ok) {
                     messageDiv.className = 'add-article-message success';
@@ -1449,7 +1458,7 @@
             const statsSpan = document.getElementById('logStats');
             
             const date = dateInput.value || new Date().toISOString().split('T')[0];
-            const lines = parseInt(linesSelect.value) || 500;
+            const lines = parseInt(linesSelect.value) || 100;
             
             viewer.innerHTML = '<div class="loading">加载中...</div>';
             

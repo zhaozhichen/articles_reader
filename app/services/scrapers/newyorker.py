@@ -1,12 +1,15 @@
 """New Yorker article scraper."""
 import json
 import re
+import logging
 from datetime import datetime
 from typing import Optional, Tuple
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
 from app.services.scrapers.base import BaseScraper
+
+logger = logging.getLogger(__name__)
 
 
 class NewYorkerScraper(BaseScraper):
@@ -258,26 +261,26 @@ class NewYorkerScraper(BaseScraper):
         page = 1
         
         import sys
-        print(f"Searching for articles published on {target_date}...", file=sys.stderr)
-        print(f"Scanning /latest pages (will stop early if all articles are older)...", file=sys.stderr)
+        logger.info(f"Searching for articles published on {target_date}...")
+        logger.info(f"Scanning /latest pages (will stop early if all articles are older)...")
         
         # Process pages one by one, checking dates as we go
         while page <= max_pages:
             url = f"https://www.newyorker.com/latest?page={page}"
-            print(f"\nFetching page {page}...", file=sys.stderr)
+            logger.info(f"\nFetching page {page}...")
             
             html = self.fetch_page(url, verbose=True)
             if not html:
-                print(f"Failed to fetch page {page}, stopping.", file=sys.stderr)
+                logger.error(f"Failed to fetch page {page}, stopping.")
                 break
             
             article_urls = self.extract_article_urls_from_page(html)
             
             if not article_urls:
-                print(f"No articles found on page {page}, stopping.", file=sys.stderr)
+                logger.warning(f"No articles found on page {page}, stopping.")
                 break
             
-            print(f"Found {len(article_urls)} articles on page {page}. Checking dates...", file=sys.stderr)
+            logger.info(f"Found {len(article_urls)} articles on page {page}. Checking dates...")
             
             # Check publish dates for articles on this page
             page_article_dates = {}
@@ -313,20 +316,25 @@ class NewYorkerScraper(BaseScraper):
                             date_str = f"modified: {modified_date}"
                         
                         if matches:
+                            # Skip puzzles-and-games-dept category
+                            if 'puzzles-and-games-dept' in article_url:
+                                logger.debug(f"  [{completed}/{len(article_urls)}] ✗ {article_url} ({date_str}, skipped: puzzles-and-games-dept)")
+                                continue
+                            
                             matching_urls.append(article_url)
-                            print(f"  [{completed}/{len(article_urls)}] ✓ {article_url} ({date_str})", file=sys.stderr)
+                            logger.info(f"  [{completed}/{len(article_urls)}] ✓ {article_url} ({date_str})")
                         elif publish_date or modified_date:
                             # Determine if article is newer or older
                             check_date = modified_date if modified_date else publish_date
                             if check_date > target_date:
-                                print(f"  [{completed}/{len(article_urls)}] ✗ {article_url} ({date_str}, newer)", file=sys.stderr)
+                                logger.debug(f"  [{completed}/{len(article_urls)}] ✗ {article_url} ({date_str}, newer)")
                             else:
-                                print(f"  [{completed}/{len(article_urls)}] ✗ {article_url} ({date_str}, older)", file=sys.stderr)
+                                logger.debug(f"  [{completed}/{len(article_urls)}] ✗ {article_url} ({date_str}, older)")
                         else:
                             # Couldn't determine date
-                            print(f"  [{completed}/{len(article_urls)}] ✗ {article_url} (date: not found)", file=sys.stderr)
+                            logger.debug(f"  [{completed}/{len(article_urls)}] ✗ {article_url} (date: not found)")
                     except Exception as e:
-                        print(f"  [{completed}/{len(article_urls)}] Error processing {article_url}: {e}", file=sys.stderr)
+                        logger.error(f"  [{completed}/{len(article_urls)}] Error processing {article_url}: {e}", exc_info=True)
             
             # Check if all articles on this page are older than target date
             # Only stop if we have dates for all articles AND all are older
@@ -341,7 +349,7 @@ class NewYorkerScraper(BaseScraper):
                 # All articles have dates, check if all are older
                 all_older = all(date < target_date for date in dates_found)
                 if all_older:
-                    print(f"\nAll articles on page {page} are older than {target_date}. Stopping early.", file=sys.stderr)
+                    logger.info(f"\nAll articles on page {page} are older than {target_date}. Stopping early.")
                     break
             
             page += 1

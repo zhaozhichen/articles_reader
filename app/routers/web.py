@@ -25,13 +25,13 @@ class LogResponse(BaseModel):
 @router.get("/logs", response_model=LogResponse)
 async def get_logs(
     date: Optional[str] = Query(None, description="Date in YYYY-MM-DD format (default: today)"),
-    lines: int = Query(500, ge=1, le=5000, description="Number of lines to retrieve (max 5000)")
+    lines: int = Query(100, ge=1, le=5000, description="Number of lines to retrieve (max 5000)")
 ):
     """
     Get application logs for a specific date.
     
     - **date**: Date in YYYY-MM-DD format (default: today)
-    - **lines**: Number of lines to retrieve (default: 500, max: 5000)
+    - **lines**: Number of lines to retrieve (default: 100, max: 5000)
     """
     try:
         # Determine which log file to read

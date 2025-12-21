@@ -169,109 +169,117 @@ def import_from_subdirs_inline(en_dir, zh_dir):
     
     try:
         for en_file in en_files:
-            parsed = parse_filename_for_import(en_file.name)
-            if not parsed:
-                logger.warning(f"Skipping {en_file.name} (cannot parse filename)")
-                continue
-            
-            en_metadata = extract_metadata_from_html_for_import(en_file)
-            title_en = en_metadata.get('title') or parsed['title']
-            author = en_metadata.get('author') or parsed['author']
-            url = en_metadata.get('url') or ''
-            
-            zh_file = zh_dir / en_file.name
-            title_zh = None
-            zh_path = None
-            
-            if zh_file.exists():
-                # For Chinese files, prefer h1 tag which contains the translated title
-                zh_metadata = extract_metadata_from_html_for_import(zh_file, prefer_h1=True)
-                title_zh = zh_metadata.get('title')
-                zh_path = f"zh/{en_file.name}"
-            
-            en_path = f"en/{en_file.name}"
-            
-            # Extract category and source from URL if available, otherwise use filename
-            source = "New Yorker"  # Default
-            source_slug = parsed.get('source_slug')  # May be None for old format files
-            
-            if url:
-                scraper = get_scraper_for_url(url)
-                if scraper:
-                    source = scraper.get_source_name()
-                    source_slug = scraper.get_source_slug()
-                    # Try to read HTML to get better category extraction
-                    try:
-                        with open(en_file, 'r', encoding='utf-8') as f:
-                            html_content = f.read()
-                        category = scraper.extract_category(url, html_content)
-                    except Exception:
-                        category = scraper.extract_category(url, '')
+            try:
+                parsed = parse_filename_for_import(en_file.name)
+                if not parsed:
+                    logger.warning(f"Skipping {en_file.name} (cannot parse filename)")
+                    continue
+                
+                en_metadata = extract_metadata_from_html_for_import(en_file)
+                title_en = en_metadata.get('title') or parsed['title']
+                author = en_metadata.get('author') or parsed['author']
+                url = en_metadata.get('url') or ''
+                
+                zh_file = zh_dir / en_file.name
+                title_zh = None
+                zh_path = None
+                
+                if zh_file.exists():
+                    # For Chinese files, prefer h1 tag which contains the translated title
+                    zh_metadata = extract_metadata_from_html_for_import(zh_file, prefer_h1=True)
+                    title_zh = zh_metadata.get('title')
+                    zh_path = f"zh/{en_file.name}"
+                
+                en_path = f"en/{en_file.name}"
+                
+                # Extract category and source from URL if available, otherwise use filename
+                source = "New Yorker"  # Default
+                source_slug = parsed.get('source_slug')  # May be None for old format files
+                
+                if url:
+                    scraper = get_scraper_for_url(url)
+                    if scraper:
+                        source = scraper.get_source_name()
+                        source_slug = scraper.get_source_slug()
+                        # Try to read HTML to get better category extraction
+                        try:
+                            with open(en_file, 'r', encoding='utf-8') as f:
+                                html_content = f.read()
+                            category = scraper.extract_category(url, html_content)
+                        except Exception:
+                            category = scraper.extract_category(url, '')
+                    else:
+                        category = extract_category_from_url(url)
                 else:
-                    category = extract_category_from_url(url)
-            else:
-                category = parsed['category']
-                # If we have source_slug from filename but no URL, try to determine source
-                if source_slug:
-                    if source_slug == 'newyorker':
-                        source = "New Yorker"
-                    elif source_slug == 'nytimes':
-                        source = "New York Times"
-            
-            # Convert 'na' category to source name
-            if category == 'na':
-                category = source
-            
-            existing = None
-            if url:
-                existing = db.query(Article).filter(Article.original_url == url).first()
-            
-            if not existing:
-                existing = db.query(Article).filter(Article.html_file_en == en_path).first()
-            
-            if existing:
-                existing.title = title_en
-                # Only update title_zh if:
-                # 1. We extracted a title AND it's different from English title (likely Chinese)
-                # 2. OR existing title_zh is None and we have a valid extraction
-                if title_zh and title_zh != title_en:
-                    # Successfully extracted Chinese title
-                    existing.title_zh = title_zh
-                elif title_zh is None and zh_file.exists() and existing.title_zh is None:
-                    # Extraction failed but file exists, try fallback
-                    zh_metadata_fallback = extract_metadata_from_html_for_import(zh_file, prefer_h1=False)
-                    title_zh_fallback = zh_metadata_fallback.get('title')
-                    if title_zh_fallback and title_zh_fallback != title_en:
-                        existing.title_zh = title_zh_fallback
-                # If title_zh == title_en, extraction failed (fell back to English), preserve existing
-                existing.date = parsed['date']
-                existing.category = category
-                existing.author = author
-                existing.source = source
-                existing.html_file_en = en_path
-                # Only update html_file_zh if Chinese file exists
-                if zh_path:
-                    existing.html_file_zh = zh_path
-                existing.updated_at = datetime.utcnow()
-                if url and not existing.original_url:
-                    existing.original_url = url
-                updated_count += 1
-            else:
-                article = Article(
-                    title=title_en,
-                    title_zh=title_zh,
-                    date=parsed['date'],
-                    category=category,
-                    author=author,
-                    source=source,
-                    original_url=url,
-                    html_file_en=en_path,
-                    html_file_zh=zh_path
-                )
-                db.add(article)
-                imported_count += 1
+                    category = parsed['category']
+                    # If we have source_slug from filename but no URL, try to determine source
+                    if source_slug:
+                        if source_slug == 'newyorker':
+                            source = "New Yorker"
+                        elif source_slug == 'nytimes':
+                            source = "New York Times"
+                
+                # Convert 'na' category to source name
+                if category == 'na':
+                    category = source
+                
+                existing = None
+                if url:
+                    existing = db.query(Article).filter(Article.original_url == url).first()
+                
+                if not existing:
+                    existing = db.query(Article).filter(Article.html_file_en == en_path).first()
+                
+                if existing:
+                    existing.title = title_en
+                    # Only update title_zh if:
+                    # 1. We extracted a title AND it's different from English title (likely Chinese)
+                    # 2. OR existing title_zh is None and we have a valid extraction
+                    if title_zh and title_zh != title_en:
+                        # Successfully extracted Chinese title
+                        existing.title_zh = title_zh
+                    elif title_zh is None and zh_file.exists() and existing.title_zh is None:
+                        # Extraction failed but file exists, try fallback
+                        zh_metadata_fallback = extract_metadata_from_html_for_import(zh_file, prefer_h1=False)
+                        title_zh_fallback = zh_metadata_fallback.get('title')
+                        if title_zh_fallback and title_zh_fallback != title_en:
+                            existing.title_zh = title_zh_fallback
+                    # If title_zh == title_en, extraction failed (fell back to English), preserve existing
+                    existing.date = parsed['date']
+                    existing.category = category
+                    existing.author = author
+                    existing.source = source
+                    existing.html_file_en = en_path
+                    # Only update html_file_zh if Chinese file exists
+                    if zh_path:
+                        existing.html_file_zh = zh_path
+                    existing.updated_at = datetime.utcnow()
+                    if url and not existing.original_url:
+                        existing.original_url = url
+                    updated_count += 1
+                else:
+                    article = Article(
+                        title=title_en,
+                        title_zh=title_zh,
+                        date=parsed['date'],
+                        category=category,
+                        author=author,
+                        source=source,
+                        original_url=url,
+                        html_file_en=en_path,
+                        html_file_zh=zh_path
+                    )
+                    db.add(article)
+                    imported_count += 1
+                
+                # Commit after each article to avoid batch failures
+                db.commit()
+            except Exception as e:
+                # Rollback this article's transaction and continue with next
+                db.rollback()
+                logger.error(f"Error importing {en_file.name}: {e}", exc_info=True)
+                continue
         
-        db.commit()
         logger.info(f"Successfully imported {imported_count} new articles and updated {updated_count} existing articles")
         
     except Exception as e:

@@ -28,6 +28,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app.services.scrapers import get_scraper_for_url, NewYorkerScraper
 from app.services.translator import translate_html_with_gemini_retry
+from app.utils.logger import setup_script_logger
+
+# Setup unified logger for this script
+logger = setup_script_logger("extract_articles")
 
 # Load environment variables from .env file
 try:
@@ -64,7 +68,7 @@ def save_article_html(url, target_date=None, output_dir='.', translate=False, ge
         Translated HTML content with only body translated, or None if translation fails
     """
     if not GEMINI_AVAILABLE:
-        print("  Warning: google.genai not installed. Install with: pip install google-genai", file=sys.stderr)
+        logger.warning("  Warning: google.genai not installed. Install with: pip install google-genai")
         return None
     
     # Get API key (the client gets it from GEMINI_API_KEY env var automatically)
@@ -73,27 +77,27 @@ def save_article_html(url, target_date=None, output_dir='.', translate=False, ge
         api_key = os.getenv('GEMINI_API_KEY')
     
     if not api_key:
-        print("  Warning: GEMINI_API_KEY not set. Skipping translation.", file=sys.stderr)
+        logger.warning("  Warning: GEMINI_API_KEY not set. Skipping translation.")
         return None
     
     try:
         # Extract article body
-        print("    Extracting article body content...", file=sys.stderr)
+        logger.info("    Extracting article body content...")
         body_html, body_element = extract_article_body(html_content)
         
         if not body_html or not body_element:
-            print("  Warning: Could not find article body content", file=sys.stderr)
+            logger.warning("  Warning: Could not find article body content")
             return None
         
         body_size = len(body_html)
-        print(f"    Found article body (size: {body_size} chars)", file=sys.stderr)
+        logger.info(f"    Found article body (size: {body_size} chars)")
         
         # Maximum size for single translation
         MAX_SINGLE_TRANSLATION = 200000
         
         # Check if body is too long to translate
         if body_size > MAX_SINGLE_TRANSLATION:
-            print(f"    Article body is too long ({body_size:,} chars), skipping translation and showing placeholder", file=sys.stderr)
+            logger.warning(f"    Article body is too long ({body_size:,} chars), skipping translation and showing placeholder")
             soup = BeautifulSoup(html_content, 'html.parser')
             
             # Find the body element to replace
@@ -119,7 +123,7 @@ def save_article_html(url, target_date=None, output_dir='.', translate=False, ge
                 return str(soup)
             else:
                 # If we can't find the body, return original HTML with a note
-                print("  Warning: Could not locate body element for placeholder insertion", file=sys.stderr)
+                logger.warning("  Warning: Could not locate body element for placeholder insertion")
                 return html_content
         
         # The client gets the API key from the environment variable `GEMINI_API_KEY`
@@ -157,17 +161,17 @@ def save_article_html(url, target_date=None, output_dir='.', translate=False, ge
 HTML内容：
 """ + body_html
         
-        # Generate translation using gemini-3-pro-preview
-        print(f"    Sending article body to Gemini (size: {len(body_html)} chars)...", file=sys.stderr)
+        # Generate translation using gemini-3-flash-preview
+        logger.info(f"    Sending article body to Gemini (size: {len(body_html)} chars)...")
         
         response = client.models.generate_content(
-            model="gemini-3-pro-preview",
+            model="gemini-3-flash-preview",
             contents=prompt
         )
         
         # Check if response is valid
         if not response:
-            print("  Error: Empty response from Gemini API", file=sys.stderr)
+            logger.error("  Error: Empty response from Gemini API")
             return None
         
         # Get text from response - handle different response formats
@@ -186,17 +190,17 @@ HTML内容：
                 # Try to convert response to string
                 translated_html = str(response)
         except Exception as e:
-            print(f"  Error extracting text from response: {e}", file=sys.stderr)
-            print(f"  Response type: {type(response)}", file=sys.stderr)
+            logger.error(f"  Error extracting text from response: {e}")
+            logger.error(f"  Response type: {type(response)}")
             if hasattr(response, '__dict__'):
-                print(f"  Response attributes: {list(response.__dict__.keys())}", file=sys.stderr)
+                logger.error(f"  Response attributes: {list(response.__dict__.keys())}")
             return None
         
         if not translated_html or len(translated_html.strip()) == 0:
-            print("  Error: Translation result is empty", file=sys.stderr)
+            logger.error("  Error: Translation result is empty")
             return None
         
-        print(f"    Received translation (size: {len(translated_html)} chars)", file=sys.stderr)
+        logger.info(f"    Received translation (size: {len(translated_html)} chars)")
         
         # Clean up the response (sometimes Gemini adds markdown formatting)
         # Remove markdown code blocks if present
@@ -210,12 +214,12 @@ HTML内容：
         
         # Verify we got substantial HTML content
         if len(translated_html) < len(html_content) * 0.1:
-            print(f"  Warning: Translation seems too short ({len(translated_html)} vs original {len(html_content)} chars)", file=sys.stderr)
-            print(f"  This might indicate the translation was truncated or incomplete", file=sys.stderr)
+            logger.warning(f"  Warning: Translation seems too short ({len(translated_html)} vs original {len(html_content)} chars)")
+            logger.warning(f"  This might indicate the translation was truncated or incomplete")
         
         # Verify basic HTML structure
         if not translated_html or len(translated_html.strip()) < 100:
-            print(f"  Warning: Translation result seems too short", file=sys.stderr)
+            logger.warning(f"  Warning: Translation result seems too short")
             return None
         
         # Replace the original body with translated body in the full HTML
@@ -248,7 +252,7 @@ HTML内容：
                 for child in list(translated_body_soup.children):
                     original_body.append(child)
             
-            print(f"    Replaced article body with translated version", file=sys.stderr)
+            logger.info(f"    Replaced article body with translated version")
             # Return the modified full HTML
             return str(soup)
         else:
@@ -264,11 +268,11 @@ HTML内容：
                         body_element.append(child)
                 return str(soup)
             else:
-                print("  Warning: Could not locate body element for replacement", file=sys.stderr)
+                logger.warning("  Warning: Could not locate body element for replacement")
                 return None
         
     except Exception as e:
-        print(f"  Error translating with Gemini: {e}", file=sys.stderr)
+        logger.error(f"  Error translating with Gemini: {e}", exc_info=True)
         import traceback
         traceback.print_exc()
         return None
@@ -291,7 +295,7 @@ def save_article_html(url, target_date=None, output_dir='.', translate=False, ge
     # Get the appropriate scraper for this URL
     scraper = get_scraper_for_url(url)
     if not scraper:
-        print(f"  Error: No scraper available for URL: {url}", file=sys.stderr)
+        logger.error(f"  Error: No scraper available for URL: {url}")
         return (None, None)
     
     # Ensure output directory exists
@@ -300,7 +304,7 @@ def save_article_html(url, target_date=None, output_dir='.', translate=False, ge
     # Scrape the article
     result = scraper.scrape(url, verbose=True)
     if not result:
-        print(f"  Failed to scrape article from {url}", file=sys.stderr)
+        logger.error(f"  Failed to scrape article from {url}")
         return (None, None)
     
     # Extract metadata from result
@@ -339,8 +343,22 @@ def save_article_html(url, target_date=None, output_dir='.', translate=False, ge
         
         # Translate if requested (with retry mechanism)
         if translate:
-            print(f"    Translating to Simplified Chinese...", file=sys.stderr)
-            translated_html = translate_html_with_gemini_retry(result.html, gemini_api_key, max_retries=2)
+            logger.info(f"    Translating to Simplified Chinese...")
+            # Translate with retry mechanism
+            # Note: translate_html_with_gemini will extract body internally
+            try:
+                logger.info(f"    [DEBUG] About to call translate_html_with_gemini_retry for {filename}")
+                logger.info(f"    [DEBUG] HTML content length: {len(result.html)} chars")
+                translated_html = translate_html_with_gemini_retry(
+                    result.html, 
+                    gemini_api_key, 
+                    max_retries=2,
+                    filename=filename
+                )
+                logger.info(f"    [DEBUG] translate_html_with_gemini_retry returned: {type(translated_html)}, length: {len(translated_html) if translated_html else 0}")
+            except Exception as e:
+                logger.error(f"    [DEBUG] Exception calling translate_html_with_gemini_retry: {e}", exc_info=True)
+                translated_html = None
             if translated_html:
                 # If zh_dir is specified, save to that directory with same filename
                 # Otherwise, use zh_ prefix in same directory (backward compatibility)
@@ -352,9 +370,9 @@ def save_article_html(url, target_date=None, output_dir='.', translate=False, ge
                     translated_filepath = os.path.join(output_dir, translated_filename)
                 with open(translated_filepath, 'w', encoding='utf-8') as f:
                     f.write(translated_html)
-                print(f"    Saved translation to: {translated_filepath}", file=sys.stderr)
+                logger.info(f"    Saved translation to: {translated_filepath}")
             else:
-                print(f"    Translation failed, skipping", file=sys.stderr)
+                logger.warning(f"    Translation failed, skipping")
         
         # Create and save metadata JSON file
         # For translated file path, use relative path if zh_dir is specified
@@ -381,11 +399,11 @@ def save_article_html(url, target_date=None, output_dir='.', translate=False, ge
         metadata_filepath = os.path.join(output_dir, metadata_filename)
         with open(metadata_filepath, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, ensure_ascii=False, indent=2)
-        print(f"    Saved metadata to: {metadata_filepath}", file=sys.stderr)
+        logger.info(f"    Saved metadata to: {metadata_filepath}")
         
         return (filepath, translated_filepath)
     except Exception as e:
-        print(f"  Error saving {url}: {e}", file=sys.stderr)
+        logger.error(f"  Error saving {url}: {e}", exc_info=True)
         return (None, None)
 
 
@@ -421,13 +439,13 @@ def process_single_url(url, output_dir='.', translate=False, gemini_api_key=None
     Returns:
         0 on success, 1 on failure
     """
-    print(f"Processing article: {url}", file=sys.stderr)
+    logger.info(f"Processing article: {url}")
     
     # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
     
     if translate:
-        print(f"Translation enabled: Will create Simplified Chinese version", file=sys.stderr)
+        logger.info(f"Translation enabled: Will create Simplified Chinese version")
     
     # Save and translate the article
     original_path, translated_path = save_article_html(
@@ -438,12 +456,12 @@ def process_single_url(url, output_dir='.', translate=False, gemini_api_key=None
     )
     
     if original_path:
-        print(f"Successfully saved to: {original_path}", file=sys.stderr)
+        logger.info(f"Successfully saved to: {original_path}")
         if translated_path:
-            print(f"Successfully translated to: {translated_path}", file=sys.stderr)
+            logger.info(f"Successfully translated to: {translated_path}")
         return 0
     else:
-        print(f"Failed to save article", file=sys.stderr)
+        logger.error(f"Failed to save article")
         return 1
 
 
@@ -506,8 +524,8 @@ def main():
         # Check if we have a scraper for this URL
         scraper = get_scraper_for_url(args.url)
         if not scraper:
-            print(f"Error: No scraper available for URL: {args.url}", file=sys.stderr)
-            print(f"Supported sources: New Yorker, New York Times", file=sys.stderr)
+            logger.error(f"Error: No scraper available for URL: {args.url}")
+            logger.error(f"Supported sources: New Yorker, New York Times")
             sys.exit(1)
         return process_single_url(
             args.url,
@@ -525,7 +543,7 @@ def main():
     try:
         target_date = datetime.strptime(args.date, '%Y-%m-%d').date()
     except ValueError:
-        print(f"Error: Invalid date format '{args.date}'. Use YYYY-MM-DD format.", file=sys.stderr)
+        logger.error(f"Error: Invalid date format '{args.date}'. Use YYYY-MM-DD format.")
         sys.exit(1)
     
     # Create output directory if it doesn't exist
@@ -540,28 +558,28 @@ def main():
     
     # Save HTML files for each matching article
     if matching_urls:
-        print(f"\nFound {len(matching_urls)} articles published on {target_date}", file=sys.stderr)
+        logger.info(f"\nFound {len(matching_urls)} articles published on {target_date}")
         
         # Step 1: Download all English articles first
-        print(f"\nStep 1: Downloading {len(matching_urls)} English articles...", file=sys.stderr)
+        logger.info(f"\nStep 1: Downloading {len(matching_urls)} English articles...")
         saved_files = []
         failed_urls = []
         skipped_files = []
         for i, url in enumerate(matching_urls, 1):
-            print(f"  [{i}/{len(matching_urls)}] Processing {url}...", file=sys.stderr)
+            logger.info(f"  [{i}/{len(matching_urls)}] Processing {url}...")
             
             # Check if file already exists by fetching metadata first
             # We need to get the article to determine the filename
             scraper = get_scraper_for_url(url)
             if not scraper:
                 failed_urls.append(url)
-                print(f"    No scraper available for URL", file=sys.stderr)
+                logger.error(f"    No scraper available for URL")
                 continue
             
             result = scraper.scrape(url, verbose=False)
             if not result:
                 failed_urls.append(url)
-                print(f"    Failed to fetch HTML", file=sys.stderr)
+                logger.error(f"    Failed to fetch HTML")
                 continue
             
             # Extract metadata to determine filename
@@ -580,13 +598,16 @@ def main():
             
             # Check if file already exists
             if os.path.exists(expected_filepath):
-                print(f"    File already exists, skipping download: {filename}", file=sys.stderr)
+                skip_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                logger.info(f"  [{i}/{len(matching_urls)}] [{skip_time_str}] SKIP download (already exists): {filename} ({url})")
                 skipped_files.append(expected_filepath)
                 saved_files.append(expected_filepath)  # Still add to saved_files for translation step
                 continue
             
             # File doesn't exist, proceed with download
-            print(f"    Downloading...", file=sys.stderr)
+            download_start_time = time.time()
+            download_start_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            logger.info(f"  [{i}/{len(matching_urls)}] [{download_start_str}] START downloading {filename} ({url})")
             original_path, _ = save_article_html(
                 url, target_date, args.output_dir, 
                 translate=False,  # Don't translate yet
@@ -595,32 +616,52 @@ def main():
             )
             if original_path:
                 saved_files.append(original_path)
-                print(f"    Saved to: {original_path}", file=sys.stderr)
+                download_elapsed = time.time() - download_start_time
+                download_end_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                logger.info(f"  [{i}/{len(matching_urls)}] [{download_end_str}] SUCCESS download (took {download_elapsed:.1f}s): {original_path}")
             else:
                 failed_urls.append(url)
-                print(f"    Failed to save", file=sys.stderr)
+                download_elapsed = time.time() - download_start_time
+                download_end_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                logger.error(f"  [{i}/{len(matching_urls)}] [{download_end_str}] FAILED download (took {download_elapsed:.1f}s): {filename} ({url})")
             
             # Add delay between downloads (except for the last one)
             if i < len(matching_urls):
                 delay = random.uniform(3, 7)
-                print(f"    Waiting {delay:.1f}s before next download...", file=sys.stderr)
+                logger.info(f"    Waiting {delay:.1f}s before next download...")
                 time.sleep(delay)
         
-        print(f"\nStep 1 complete: Successfully downloaded {len(saved_files)} articles", file=sys.stderr)
+        logger.info(f"\nStep 1 complete: Successfully downloaded {len(saved_files)} articles")
         if failed_urls:
-            print(f"  Failed to download {len(failed_urls)} articles", file=sys.stderr)
+            logger.warning(f"  Failed to download {len(failed_urls)} articles")
         if skipped_files:
-            print(f"  Skipped {len(skipped_files)} articles (already exist)", file=sys.stderr)
+            logger.info(f"  Skipped {len(skipped_files)} articles (already exist)")
         
         # Step 2: Translate all downloaded articles
         translated_files = []
         skipped_translations = []
         if args.translate and saved_files:
-            print(f"\nStep 2: Translating {len(saved_files)} articles to Simplified Chinese...", file=sys.stderr)
+            logger.info(f"\nStep 2: Translating {len(saved_files)} articles to Simplified Chinese...")
             for i, filepath in enumerate(saved_files, 1):
                 # Extract filename from path
                 filename = os.path.basename(filepath)
-                print(f"  [{i}/{len(saved_files)}] Translating {filename}...", file=sys.stderr)
+                
+                # Get article URL from metadata for better logging
+                article_url = None
+                metadata_filepath = filepath.replace('.html', '.json')
+                if os.path.exists(metadata_filepath):
+                    try:
+                        with open(metadata_filepath, 'r', encoding='utf-8') as f:
+                            metadata = json.load(f)
+                            article_url = metadata.get('url', '')
+                    except Exception:
+                        pass
+                
+                # Log translation start with timestamp
+                start_time = time.time()
+                start_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                url_info = f" ({article_url})" if article_url else ""
+                logger.info(f"  [{i}/{len(saved_files)}] [{start_time_str}] START translating {filename}{url_info}")
                 
                 # Check if translation already exists
                 if args.zh_dir:
@@ -630,7 +671,9 @@ def main():
                     translated_filepath = os.path.join(args.output_dir, translated_filename)
                 
                 if os.path.exists(translated_filepath):
-                    print(f"    Translation already exists, skipping: {translated_filepath}", file=sys.stderr)
+                    elapsed = time.time() - start_time
+                    end_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    logger.info(f"  [{i}/{len(saved_files)}] [{end_time_str}] SKIP translation (already exists, took {elapsed:.1f}s): {translated_filepath}{url_info}")
                     skipped_translations.append(translated_filepath)
                     # Still add to translated_files for summary
                     translated_files.append(translated_filepath)
@@ -641,8 +684,17 @@ def main():
                     with open(filepath, 'r', encoding='utf-8') as f:
                         html = f.read()
                     
+                    html_size = len(html)
+                    logger.info(f"    Reading HTML file: {html_size:,} characters")
+                    
                     # Translate with retry mechanism (max 2 retries = 3 total attempts)
-                    translated_html = translate_html_with_gemini_retry(html, args.gemini_api_key, max_retries=2)
+                    # Note: translate_html_with_gemini will extract body internally
+                    translated_html = translate_html_with_gemini_retry(
+                        html, 
+                        args.gemini_api_key, 
+                        max_retries=2, 
+                        filename=filename
+                    )
                     if translated_html:
                         # Save translated version
                         if args.zh_dir:
@@ -654,10 +706,14 @@ def main():
                         with open(translated_filepath, 'w', encoding='utf-8') as f:
                             f.write(translated_html)
                         translated_files.append(translated_filepath)
-                        print(f"    Saved translation to: {translated_filepath}", file=sys.stderr)
+                        
+                        # Log translation completion with timestamp and duration
+                        end_time = time.time()
+                        elapsed = end_time - start_time
+                        end_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        logger.info(f"    [{end_time_str}] SUCCESS (took {elapsed:.1f}s, {elapsed/60:.1f}min): Saved translation to {translated_filepath}")
                         
                         # Update metadata JSON file to include translated file path
-                        metadata_filepath = filepath.replace('.html', '.json')
                         if os.path.exists(metadata_filepath):
                             try:
                                 with open(metadata_filepath, 'r', encoding='utf-8') as f:
@@ -666,31 +722,51 @@ def main():
                                 with open(metadata_filepath, 'w', encoding='utf-8') as f:
                                     json.dump(metadata, f, ensure_ascii=False, indent=2)
                             except Exception as e:
-                                print(f"    Warning: Could not update metadata file: {e}", file=sys.stderr)
+                                logger.warning(f"    Warning: Could not update metadata file: {e}")
+                        
+                        # Import this article immediately so it appears on the page
+                        try:
+                            from app.services.importer import import_from_subdirs_inline
+                            from app.config import HTML_DIR_EN, HTML_DIR_ZH
+                            logger.info(f"    Importing article to database...")
+                            # Import just this one article by importing from the directory
+                            # The import function will update existing or create new
+                            import_count = import_from_subdirs_inline(HTML_DIR_EN, HTML_DIR_ZH)
+                            logger.info(f"    ✅ Article imported/updated in database (will appear on page after refresh)")
+                        except Exception as e:
+                            logger.warning(f"    Warning: Could not import article immediately: {e}")
                     else:
-                        print(f"    Translation failed, skipping", file=sys.stderr)
+                        # Log translation failure with timestamp and duration
+                        end_time = time.time()
+                        elapsed = end_time - start_time
+                        end_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        logger.error(f"    [{end_time_str}] FAILED (took {elapsed:.1f}s, {elapsed/60:.1f}min): Translation failed after all retries")
                 except Exception as e:
-                    print(f"    Error translating {filename}: {e}", file=sys.stderr)
+                    # Log error with timestamp and duration
+                    end_time = time.time()
+                    elapsed = end_time - start_time
+                    end_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    logger.error(f"    [{end_time_str}] ERROR (took {elapsed:.1f}s, {elapsed/60:.1f}min): Error translating {filename}: {e}", exc_info=True)
                 
                 # Add delay between translations (except for the last one)
                 if i < len(saved_files):
                     delay = random.uniform(3, 7)
-                    print(f"    Waiting {delay:.1f}s before next translation...", file=sys.stderr)
+                    logger.info(f"    Waiting {delay:.1f}s before next translation...")
                     time.sleep(delay)
             
-            print(f"\nStep 2 complete: Successfully translated {len(translated_files)} articles", file=sys.stderr)
+            logger.info(f"\nStep 2 complete: Successfully translated {len(translated_files)} articles")
             if skipped_translations:
-                print(f"  Skipped {len(skipped_translations)} translations (already exist)", file=sys.stderr)
+                logger.info(f"  Skipped {len(skipped_translations)} translations (already exist)")
         
-        print(f"\nSummary:", file=sys.stderr)
-        print(f"  Downloaded: {len(saved_files)} articles", file=sys.stderr)
+        logger.info(f"\nSummary:")
+        logger.info(f"  Downloaded: {len(saved_files)} articles")
         if args.translate:
-            print(f"  Translated: {len(translated_files)} articles", file=sys.stderr)
-        print(f"\nAll articles published on {target_date}:", file=sys.stderr)
+            logger.info(f"  Translated: {len(translated_files)} articles")
+        logger.info(f"\nAll articles published on {target_date}:")
         for url in matching_urls:
-            print(url)
+            logger.info(url)
     else:
-        print(f"\nNo articles found published on {target_date}", file=sys.stderr)
+        logger.warning(f"\nNo articles found published on {target_date}")
     
     return 0 if matching_urls else 1
 

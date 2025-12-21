@@ -55,6 +55,15 @@ if not root_logger.handlers:
     file_handler.setLevel(logging.INFO)
     file_formatter = ESTFormatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     file_handler.setFormatter(file_formatter)
+    # Ensure immediate flushing for real-time log visibility
+    import sys
+    if hasattr(file_handler.stream, 'flush'):
+        # Force flush after each log entry by wrapping the handler
+        original_emit = file_handler.emit
+        def emit_with_flush(record):
+            original_emit(record)
+            file_handler.stream.flush()
+        file_handler.emit = emit_with_flush
 
     # Console handler
     console_handler = logging.StreamHandler()
