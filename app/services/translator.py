@@ -19,7 +19,6 @@ from bs4 import BeautifulSoup, Tag
 
 try:
     from google import genai
-
     GEMINI_AVAILABLE = True
 except ImportError:  # pragma: no cover - optional dependency
     GEMINI_AVAILABLE = False
@@ -124,14 +123,19 @@ def translate_newyorker_html(
             logger.info("SKIP_GEMINI_TRANSLATION is enabled. Using placeholder Chinese text for layout testing.")
             logger.info("Extracted %d text nodes for placeholder translation.", len(payload))
             try:
+                logger.debug("About to generate placeholder translations...")
                 translated_items = _generate_placeholder_translations(payload)
                 logger.info("Generated %d placeholder translations.", len(translated_items))
+                logger.debug("About to inject translations into DOM...")
                 translated_html = inject_translations(soup, translated_items)
                 logger.info("Successfully injected placeholder translations into DOM. HTML length: %d chars", len(translated_html))
+                if not translated_html:
+                    logger.error("inject_translations returned None or empty string")
+                    return None
                 return translated_html
             except Exception as exc:
                 logger.error("Error in placeholder mode: %s", exc, exc_info=True)
-            return None
+                return None
     except Exception as exc:
         logger.error("Error in translate_newyorker_html (extraction/debug mode): %s", exc, exc_info=True)
         return None
@@ -209,22 +213,85 @@ def extract_content_for_translation(html_content: str) -> Tuple[BeautifulSoup, L
         payload, node_id = collect_nodes(soup, 0)
         logger.info("Fallback full-document scan found %d nodes.", len(payload))
 
-    if not payload:
-        logger.warning("Fallback scan still found 0 nodes; running last-resort <p> scan without skip filter.")
-        for tag in soup.find_all("p"):
-            text = tag.get_text(strip=True)
-            if not text:
+    # Additional scan: look for paragraphs that might be in accordion/collapsible components
+    # These might not be in the article root but are still part of the article content
+    # Also check <div> tags that might contain article content (e.g., div[role="heading"])
+    if payload:
+        # Check if we're missing some long paragraphs that might be in special containers
+        # Scan for <p> tags and <div> tags with substantial text that weren't captured
+        existing_texts = {item["text"][:50] for item in payload}  # Use first 50 chars as fingerprint
+        initial_count = len(payload)
+        
+        # Scan <p> tags
+        for p in soup.find_all("p"):
+            text = p.get_text(strip=True)
+            if not text or len(text) < 100:  # Only consider substantial paragraphs
                 continue
-            tag["data-translate-id"] = str(node_id)
+            text_fingerprint = text[:50]
+            if text_fingerprint in existing_texts:
+                continue  # Already captured
+            
+            # Check if it should be skipped
+            if _should_skip(p):
+                continue
+            
+            # This is a substantial paragraph that wasn't captured, add it
+            p["data-translate-id"] = str(node_id)
             payload.append(
                 {
                     "id": str(node_id),
                     "text": text,
-                    "tag": tag.name,
+                    "tag": p.name,
                 }
             )
             node_id += 1
-        logger.info("Last-resort scan found %d nodes.", len(payload))
+            logger.debug("Found additional paragraph outside article root: %s", text[:100])
+        
+        # Scan <div> tags that might contain article content
+        # Look for divs with role="heading" or divs with substantial text content
+        for div in soup.find_all("div"):
+            text = div.get_text(strip=True)
+            if not text or len(text) < 100:  # Only consider substantial content
+                continue
+            text_fingerprint = text[:50]
+            if text_fingerprint in existing_texts:
+                continue  # Already captured
+            
+            # Check if it looks like article content
+            # Priority: divs with role="heading" are likely article content
+            role = div.get("role", "")
+            aria_level = div.get("aria-level", "")
+            
+            # Skip if it has UI-related classes or is clearly not content
+            classes = div.get("class", [])
+            class_str = " ".join(classes).lower()
+            if any(ui_keyword in class_str for ui_keyword in ["button", "icon", "control", "widget", "menu", "nav", "header", "footer"]):
+                continue
+            
+            # For divs, be more selective:
+            # 1. Accept divs with role="heading" (these are likely article headings/paragraphs)
+            # 2. Accept divs with substantial text (200+ chars) that don't look like UI
+            # 3. Skip very long divs that might be the entire page wrapper
+            if role == "heading" or (len(text) >= 200 and len(text) < 5000):
+                # Check if it should be skipped (but be more lenient for divs with role="heading")
+                if role != "heading" and _should_skip(div):
+                    continue
+                
+                # This is a substantial div that might contain article content, add it
+                div["data-translate-id"] = str(node_id)
+                payload.append(
+                    {
+                        "id": str(node_id),
+                        "text": text,
+                        "tag": div.name,
+                    }
+                )
+                node_id += 1
+                logger.debug("Found additional div with content outside article root: %s", text[:100])
+        
+        additional_count = len(payload) - initial_count
+        if additional_count > 0:
+            logger.info("Additional scan found %d more nodes outside article root.", additional_count)
 
     # Debug aids: total <p> count and first snippet
     total_p = len(soup.find_all("p"))
@@ -483,6 +550,7 @@ def _generate_placeholder_translations(payload: Sequence[Dict[str, str]]) -> Lis
         
         placeholders.append({
             "id": item["id"],
+            "tag": item.get("tag", ""),  # Preserve tag info for meta tag replacement
             "translated": placeholder_text
         })
     
@@ -498,12 +566,14 @@ def inject_translations(soup: BeautifulSoup, translated_items: Sequence[Dict[str
     logger.debug("Found %d nodes with data-translate-id, lookup has %d items", len(nodes), len(lookup))
     
     replaced = 0
+    skipped_ids = []
     for node in nodes:
         node_id = node.get("data-translate-id")
         if node_id is None:
             logger.debug("Node has data-translate-id attribute but value is None")
             continue
         if node_id not in lookup:
+            skipped_ids.append(node_id)
             logger.debug("Node ID %s not found in lookup", node_id)
             continue
         
@@ -512,16 +582,63 @@ def inject_translations(soup: BeautifulSoup, translated_items: Sequence[Dict[str
         
         # Clear all children and set new text content
         # This works even if node has nested elements
-        node.clear()
-        node.append(lookup[node_id])
-        del node["data-translate-id"]
-        replaced += 1
-        
-        # Debug: log first few replacements
-        if replaced <= 3:
-            logger.debug("Replaced node %s: '%s' -> '%s'", node_id, original_text[:50], lookup[node_id][:50])
+        try:
+            node.clear()
+            node.append(lookup[node_id])
+            del node["data-translate-id"]
+            replaced += 1
+            
+            # Debug: log first few replacements (especially h1 titles)
+            if replaced <= 5 or node.name == "h1":
+                logger.info("Replaced node %s (%s): '%s' -> '%s'", node_id, node.name, original_text[:50], lookup[node_id][:50])
+        except Exception as exc:
+            logger.error("Error replacing node %s (%s): %s", node_id, node.name, exc, exc_info=True)
+            continue
 
+    if skipped_ids:
+        logger.warning("Skipped %d nodes not found in lookup: %s", len(skipped_ids), skipped_ids[:10])
     logger.info("Injected %d translated nodes back into DOM.", replaced)
+    
+    # Also replace title in meta tags (og:title, twitter:title, title tag)
+    # Find the first h1 translation (usually ID 0) to use as the page title
+    title_translation = None
+    for item in translated_items:
+        # Check if this is an h1 translation (by tag field or by checking ID 0 which is usually h1)
+        if item.get("tag") == "h1" and "translated" in item:
+            title_translation = item["translated"]
+            break
+        # Fallback: if no tag field, check if ID is "0" (usually the h1)
+        elif item.get("id") == "0" and "translated" in item:
+            # Verify it's actually an h1 by checking the original payload structure
+            # For now, assume ID 0 is h1 (this is the common case)
+            title_translation = item["translated"]
+            logger.debug("Found title translation by ID 0 fallback")
+            break
+    
+    if title_translation:
+        # Replace <title> tag
+        title_tag = soup.find("title")
+        if title_tag:
+            # Keep the " | The New Yorker" suffix if present
+            original_title = title_tag.get_text()
+            if " | The New Yorker" in original_title:
+                title_tag.string = f"{title_translation} | The New Yorker"
+        else:
+            title_tag.string = title_translation
+            logger.debug("Replaced <title> tag with translated title")
+        
+        # Replace og:title meta tag
+        og_title = soup.find("meta", property="og:title")
+        if og_title:
+            og_title["content"] = title_translation
+            logger.debug("Replaced og:title meta tag")
+        
+        # Replace twitter:title meta tag
+        twitter_title = soup.find("meta", attrs={"name": "twitter:title"})
+        if twitter_title:
+            twitter_title["content"] = title_translation
+            logger.debug("Replaced twitter:title meta tag")
+    
     return str(soup)
 
 
