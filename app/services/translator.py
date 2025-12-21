@@ -620,17 +620,72 @@ def inject_translations(soup: BeautifulSoup, translated_items: Sequence[Dict[str
         # Store original text for debugging
         original_text = node.get_text(strip=True)
         
+        # Preserve images and other non-text elements before clearing
+        # Find all img, picture, figure, and other media elements within this node
+        # We need to preserve ALL media elements, not just direct children
+        preserved_elements = []
+        media_tags = ['img', 'picture', 'figure', 'video', 'audio', 'iframe', 'svg']
+        
+        # Find all media elements within this node
+        for media_elem in node.find_all(media_tags):
+            # Check if this element is actually within the current node (not just a descendant)
+            # by walking up the tree to see if we reach the node
+            current = media_elem.find_parent()
+            is_within_node = False
+            while current:
+                if current == node:
+                    is_within_node = True
+                    break
+                current = current.find_parent()
+            
+            if is_within_node:
+                # Extract the entire media container (picture, figure, etc.) if it exists
+                # Otherwise extract the media element itself
+                container = None
+                for tag_name in ['picture', 'figure']:
+                    container = media_elem.find_parent(tag_name)
+                    if container:
+                        # Check if container is within node
+                        container_parent = container.find_parent()
+                        while container_parent:
+                            if container_parent == node:
+                                preserved_elements.append(container.extract())
+                                break
+                            container_parent = container_parent.find_parent()
+                        if container_parent == node:
+                            break
+                    if container and container in preserved_elements:
+                        break
+                
+                # If no container was found, extract the element itself
+                if not container or container not in preserved_elements:
+                    # Make sure we haven't already extracted a parent
+                    already_extracted = False
+                    for preserved in preserved_elements:
+                        if media_elem in preserved.find_all(media_tags):
+                            already_extracted = True
+                            break
+                    if not already_extracted:
+                        preserved_elements.append(media_elem.extract())
+        
         # Clear all children and set new text content
         # This works even if node has nested elements
         try:
             node.clear()
             node.append(lookup[node_id])
+            
+            # Re-insert preserved media elements after the text
+            for elem in preserved_elements:
+                node.append(elem)
+            
             del node["data-translate-id"]
             replaced += 1
             
             # Debug: log first few replacements (especially h1 titles)
             if replaced <= 5 or node.name == "h1":
                 logger.info("Replaced node %s (%s): '%s' -> '%s'", node_id, node.name, original_text[:50], lookup[node_id][:50])
+                if preserved_elements:
+                    logger.debug("Preserved %d media element(s) in node %s", len(preserved_elements), node_id)
         except Exception as exc:
             logger.error("Error replacing node %s (%s): %s", node_id, node.name, exc, exc_info=True)
             continue
