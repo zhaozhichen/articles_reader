@@ -249,9 +249,10 @@ def extract_content_for_translation(html_content: str) -> Tuple[BeautifulSoup, L
         
         # Scan <div> tags that might contain article content
         # Look for divs with role="heading" or divs with substantial text content
+        # Be more selective to avoid UI elements and duplicate content
         for div in soup.find_all("div"):
             text = div.get_text(strip=True)
-            if not text or len(text) < 100:  # Only consider substantial content
+            if not text or len(text) < 200:  # Only consider substantial content (increased threshold)
                 continue
             text_fingerprint = text[:50]
             if text_fingerprint in existing_texts:
@@ -265,16 +266,49 @@ def extract_content_for_translation(html_content: str) -> Tuple[BeautifulSoup, L
             # Skip if it has UI-related classes or is clearly not content
             classes = div.get("class", [])
             class_str = " ".join(classes).lower()
-            if any(ui_keyword in class_str for ui_keyword in ["button", "icon", "control", "widget", "menu", "nav", "header", "footer"]):
+            if any(ui_keyword in class_str for ui_keyword in [
+                "button", "icon", "control", "widget", "menu", "nav", "header", "footer",
+                "sidebar", "ad", "promo", "newsletter", "subscribe", "social", "share",
+                "byline", "rubric", "accreditation"  # These are metadata, not content
+            ]):
+                continue
+            
+            # Skip common non-content text patterns
+            text_lower = text.lower()
+            if any(skip_pattern in text_lower for skip_pattern in [
+                "you're reading", "open questions", "new yorker favorites",
+                "the best movies", "sign up", "subscribe", "newsletter"
+            ]):
                 continue
             
             # For divs, be more selective:
             # 1. Accept divs with role="heading" (these are likely article headings/paragraphs)
             # 2. Accept divs with substantial text (200+ chars) that don't look like UI
             # 3. Skip very long divs that might be the entire page wrapper
-            if role == "heading" or (len(text) >= 200 and len(text) < 5000):
-                # Check if it should be skipped (but be more lenient for divs with role="heading")
-                if role != "heading" and _should_skip(div):
+            # 4. Only accept divs that are likely article content (not metadata/UI)
+            if role == "heading":
+                # Divs with role="heading" are likely article content
+                if _should_skip(div):
+                    continue
+                div["data-translate-id"] = str(node_id)
+                payload.append(
+                    {
+                        "id": str(node_id),
+                        "text": text,
+                        "tag": div.name,
+                    }
+                )
+                node_id += 1
+                logger.debug("Found additional div (role=heading) outside article root: %s", text[:100])
+            elif len(text) >= 200 and len(text) < 5000:
+                # For other divs, be very selective - only if they look like article paragraphs
+                # Check if it should be skipped
+                if _should_skip(div):
+                    continue
+                
+                # Additional check: skip if it contains mostly links or looks like navigation
+                links = div.find_all("a")
+                if links and len(links) > len(text) / 50:  # Too many links relative to text
                     continue
                 
                 # This is a substantial div that might contain article content, add it
@@ -536,17 +570,23 @@ def _generate_placeholder_translations(payload: Sequence[Dict[str, str]]) -> Lis
     placeholders = []
     for idx, item in enumerate(payload):
         tag_name = item.get("tag", "p")
-        original_len = len(item.get("text", ""))
+        original_text = item.get("text", "")
+        original_len = len(original_text)
+        
+        # 提取前五个词和最后五个词
+        words = original_text.split()
+        first_five = " ".join(words[:5]) if len(words) >= 5 else " ".join(words)
+        last_five = " ".join(words[-5:]) if len(words) >= 5 else " ".join(words)
         
         # 根据标签类型生成不同的 placeholder
         if tag_name.startswith("h"):
-            placeholder_text = f"【标题 {idx + 1}】这是占位符中文标题，用于测试排版效果。原始长度：{original_len} 字符。"
+            placeholder_text = f"【标题 {idx + 1}】这是占位符中文标题，用于测试排版效果。原始长度：{original_len} 字符。开头：{first_five} ... 结尾：{last_five}"
         elif tag_name == "figcaption":
-            placeholder_text = f"【图片说明 {idx + 1}】这是占位符中文图片说明，用于测试排版效果。原始长度：{original_len} 字符。"
+            placeholder_text = f"【图片说明 {idx + 1}】这是占位符中文图片说明，用于测试排版效果。原始长度：{original_len} 字符。开头：{first_five} ... 结尾：{last_five}"
         elif tag_name == "li":
-            placeholder_text = f"【列表项 {idx + 1}】这是占位符中文列表项，用于测试排版效果。原始长度：{original_len} 字符。"
+            placeholder_text = f"【列表项 {idx + 1}】这是占位符中文列表项，用于测试排版效果。原始长度：{original_len} 字符。开头：{first_five} ... 结尾：{last_five}"
         else:
-            placeholder_text = f"【段落 {idx + 1}】这是占位符中文段落，用于测试排版效果。原始长度：{original_len} 字符。"
+            placeholder_text = f"【段落 {idx + 1}】这是占位符中文段落，用于测试排版效果。原始长度：{original_len} 字符。开头：{first_five} ... 结尾：{last_five}"
         
         placeholders.append({
             "id": item["id"],
