@@ -8,6 +8,9 @@ from typing import Optional, Tuple
 import requests
 from bs4 import BeautifulSoup
 
+# Create a session to maintain cookies across requests
+_session = requests.Session()
+
 
 @dataclass
 class ScraperResult:
@@ -48,11 +51,13 @@ class BaseScraper(ABC):
             'Sec-Fetch-Mode': 'navigate',
             'Sec-Fetch-Site': 'none',
             'Sec-Fetch-User': '?1',
-            'Cache-Control': 'max-age=0'
+            'Cache-Control': 'max-age=0',
+            'Referer': 'https://www.google.com/',  # Add referer to appear more like a real user
         }
         for attempt in range(max_retries):
             try:
-                response = requests.get(url, headers=headers, timeout=30)
+                # Use session to maintain cookies
+                response = _session.get(url, headers=headers, timeout=30)
                 response.raise_for_status()
                 
                 # Random delay after successful request (3-7 seconds) to reduce IP ban risk

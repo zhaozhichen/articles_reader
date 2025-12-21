@@ -116,6 +116,19 @@ class NewYorkTimesScraper(BaseScraper):
         """Extract the main article body content from HTML."""
         soup = BeautifulSoup(html, 'html.parser')
         
+        # Check if this is a verification/paywall page
+        verification_text = soup.get_text()
+        if 'verify access' in verification_text.lower() or 'please exit and log' in verification_text.lower():
+            # Try to extract content from JSON-LD or other data sources
+            body_element = self._extract_from_json_ld(soup)
+            if body_element:
+                return str(body_element), body_element
+            
+            # Try to extract from JavaScript data
+            body_element = self._extract_from_javascript(html)
+            if body_element:
+                return str(body_element), body_element
+        
         # Try NYT-specific selectors for article body
         body_element = None
         
@@ -162,6 +175,94 @@ class NewYorkTimesScraper(BaseScraper):
                 return None, None
         
         return str(body_element), body_element
+    
+    def _extract_from_json_ld(self, soup: BeautifulSoup) -> Optional[BeautifulSoup]:
+        """Try to extract article content from JSON-LD structured data."""
+        json_ld_scripts = soup.find_all('script', type='application/ld+json')
+        for script in json_ld_scripts:
+            try:
+                data = json.loads(script.string)
+                if isinstance(data, dict):
+                    # Check for articleBody or text content
+                    if 'articleBody' in data:
+                        article_body = data['articleBody']
+                        if isinstance(article_body, str) and len(article_body) > 200:
+                            # Create a simple HTML structure from the text
+                            body_soup = BeautifulSoup(f'<div class="extracted-body">{article_body}</div>', 'html.parser')
+                            return body_soup.find('div')
+                    # Check for nested articleBody
+                    if '@graph' in data and isinstance(data['@graph'], list):
+                        for item in data['@graph']:
+                            if isinstance(item, dict) and 'articleBody' in item:
+                                article_body = item['articleBody']
+                                if isinstance(article_body, str) and len(article_body) > 200:
+                                    body_soup = BeautifulSoup(f'<div class="extracted-body">{article_body}</div>', 'html.parser')
+                                    return body_soup.find('div')
+            except (json.JSONDecodeError, KeyError, AttributeError):
+                continue
+        return None
+    
+    def _extract_from_javascript(self, html: str) -> Optional[BeautifulSoup]:
+        """Try to extract article content from JavaScript variables in the page."""
+        import re
+        
+        # Try to find window.__INITIAL_STATE__ or similar
+        patterns = [
+            r'window\.__INITIAL_STATE__\s*=\s*({.+?});',
+            r'window\.__PRELOADED_STATE__\s*=\s*({.+?});',
+            r'"articleBody":\s*"([^"]+)"',
+            r'"articleBody":\s*\'([^\']+)\'',
+        ]
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, html, re.DOTALL)
+            for match in matches:
+                try:
+                    if match.startswith('{'):
+                        # It's a JSON object
+                        data = json.loads(match)
+                        if isinstance(data, dict):
+                            # Recursively search for articleBody
+                            article_body = self._find_article_body_in_dict(data)
+                            if article_body and len(article_body) > 200:
+                                body_soup = BeautifulSoup(f'<div class="extracted-body">{article_body}</div>', 'html.parser')
+                                return body_soup.find('div')
+                    else:
+                        # It's a string (articleBody content)
+                        if len(match) > 200:
+                            # Unescape HTML entities
+                            import html as html_module
+                            match = html_module.unescape(match)
+                            body_soup = BeautifulSoup(f'<div class="extracted-body">{match}</div>', 'html.parser')
+                            return body_soup.find('div')
+                except (json.JSONDecodeError, AttributeError):
+                    continue
+        
+        return None
+    
+    def _find_article_body_in_dict(self, data: dict, depth: int = 0) -> Optional[str]:
+        """Recursively search for articleBody in a nested dictionary."""
+        if depth > 10:  # Prevent infinite recursion
+            return None
+        
+        if 'articleBody' in data:
+            body = data['articleBody']
+            if isinstance(body, str) and len(body) > 200:
+                return body
+        
+        for key, value in data.items():
+            if isinstance(value, dict):
+                result = self._find_article_body_in_dict(value, depth + 1)
+                if result:
+                    return result
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        result = self._find_article_body_in_dict(item, depth + 1)
+                        if result:
+                            return result
+        
+        return None
     
     def _extract_title(self, soup: BeautifulSoup) -> str:
         """Extract article title from HTML."""

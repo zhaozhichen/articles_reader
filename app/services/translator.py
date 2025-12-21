@@ -533,9 +533,9 @@ def translate_payload_in_batches(
         logger.info("Translating batch %d/%d (size: %d chars).", idx + 1, len(batches), sum(len(i["text"]) for i in batch))
         prompt = _build_translation_prompt(batch, style_notes)
         # Log full prompt for debugging
-        # logger.info("=== Full Translation Prompt (Batch %d/%d) ===", idx + 1, len(batches))
-        # logger.info("%s", prompt)
-        # logger.info("=== End of Prompt ===")
+        logger.info("=== Full Translation Prompt (Batch %d/%d) ===", idx + 1, len(batches))
+        logger.info("%s", prompt)
+        logger.info("=== End of Prompt ===")
         
         # Use GenerateContentConfig with forced JSON output
         if types and hasattr(types, 'GenerateContentConfig'):
@@ -551,11 +551,11 @@ def translate_payload_in_batches(
             response_text = _generate_text(client, model, prompt)
         
         # Log raw response for debugging
-        # logger.info("=== Raw Gemini Response (Batch %d/%d) ===", idx + 1, len(batches))
-        # logger.info("Response length: %d chars", len(response_text))
-        # logger.info("First 500 chars: %s", response_text[:500])
-        # logger.info("Last 500 chars: %s", response_text[-500:] if len(response_text) > 500 else response_text)
-        # logger.info("=== End of Raw Response ===")
+        logger.info("=== Raw Gemini Response (Batch %d/%d) ===", idx + 1, len(batches))
+        logger.info("Response length: %d chars", len(response_text))
+        logger.info("First 500 chars: %s", response_text[:500])
+        logger.info("Last 500 chars: %s", response_text[-500:] if len(response_text) > 500 else response_text)
+        logger.info("=== End of Raw Response ===")
         batch_result = _parse_translation_response(response_text)
         if not batch_result:
             raise RuntimeError("Empty translation batch result.")
