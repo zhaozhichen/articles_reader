@@ -3,17 +3,20 @@ from typing import Optional
 from app.services.scrapers.base import BaseScraper
 from app.services.scrapers.newyorker import NewYorkerScraper
 from app.services.scrapers.nytimes import NewYorkTimesScraper
+from app.services.scrapers.atlantic import AtlanticScraper
 
 # Registry of all available scrapers
 SCRAPERS: list[BaseScraper] = [
     NewYorkerScraper(),
     NewYorkTimesScraper(),
+    AtlanticScraper(),
 ]
 
 __all__ = [
     'BaseScraper',
     'NewYorkerScraper',
     'NewYorkTimesScraper',
+    'AtlanticScraper',
     'get_scraper_for_url',
     'SCRAPERS',
 ]

@@ -525,7 +525,7 @@ def main():
         scraper = get_scraper_for_url(args.url)
         if not scraper:
             logger.error(f"Error: No scraper available for URL: {args.url}")
-            logger.error(f"Supported sources: New Yorker, New York Times")
+            logger.error(f"Supported sources: New Yorker, New York Times, Atlantic")
             sys.exit(1)
         return process_single_url(
             args.url,

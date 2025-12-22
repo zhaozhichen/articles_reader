@@ -366,7 +366,7 @@ async def add_article_from_url(
         if not scraper:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"URL not supported. Supported sources: New Yorker, New York Times"
+                detail=f"URL not supported. Supported sources: New Yorker, New York Times, Atlantic"
             )
         
         # Check if article already exists
