@@ -23,6 +23,7 @@ class ArticleResponse(ArticleBase):
     id: str
     html_file_en: str
     html_file_zh: Optional[str] = None
+    starred: bool = False
     created_at: datetime
     updated_at: datetime
 

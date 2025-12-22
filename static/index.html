@@ -358,6 +358,31 @@
             justify-content: space-between;
             align-items: start;
             margin-bottom: 15px;
+            position: relative;
+        }
+
+        .star-button {
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            padding: 5px;
+            line-height: 1;
+            color: #ccc;
+            transition: all 0.2s;
+            flex-shrink: 0;
+        }
+
+        .star-button:hover {
+            transform: scale(1.2);
+        }
+
+        .star-button.starred {
+            color: #ffd700;
+        }
+
+        .star-button:not(.starred):hover {
+            color: #ffd700;
         }
 
         .article-title {
@@ -478,13 +503,12 @@
             align-items: center;
             margin-bottom: 20px;
             padding-bottom: 15px;
+            padding-top: 10px;
             border-bottom: 2px solid #f0f0f0;
             position: relative;
             z-index: 1001;
             background: white;
             border-radius: 12px 12px 0 0;
-            padding-top: 0;
-            margin-top: -30px;
             margin-left: -30px;
             margin-right: -30px;
             padding-left: 30px;
@@ -680,6 +704,14 @@
                 <h3>🔍 过滤器</h3>
                 <div class="filters-grid">
                     <div class="filter-group">
+                        <label>星标</label>
+                        <select id="filterStarred">
+                            <option value="">全部</option>
+                            <option value="true">带星</option>
+                            <option value="false">不带星</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
                         <label>类别</label>
                         <select id="filterCategory">
                             <option value="">全部</option>
@@ -773,6 +805,7 @@
             <div class="modal-header">
                 <h2 id="modalTitle">文章详情</h2>
                 <div class="modal-actions">
+                    <button id="modalStarBtn" onclick="toggleStarFromModal()" style="background: none; border: none; font-size: 28px; cursor: pointer; padding: 5px; line-height: 1; color: #ccc; transition: all 0.2s; margin-right: 10px;" title="加星">☆</button>
                     <button id="modalLangToggle" onclick="toggleModalLanguage()" style="padding: 8px 16px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; margin-right: 10px;">切换到中文</button>
                     <button id="modalDeleteBtn" onclick="deleteArticle()" style="padding: 8px 16px; background: #dc3545; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; margin-right: 10px;">删除文章</button>
                     <button class="modal-close" onclick="closeModal()">&times;</button>
@@ -858,12 +891,14 @@
         }
 
         function applyFilters() {
+            const starredValue = document.getElementById('filterStarred').value;
             currentFilters = {
                 category: document.getElementById('filterCategory').value || null,
                 author: document.getElementById('filterAuthor').value || null,
                 source: document.getElementById('filterSource').value || null,
                 date_from: document.getElementById('filterDateFrom').value || null,
-                date_to: document.getElementById('filterDateTo').value || null
+                date_to: document.getElementById('filterDateTo').value || null,
+                starred: starredValue === '' ? null : (starredValue === 'true')
             };
             currentPage = 1;
             loadArticles();
@@ -875,6 +910,7 @@
             document.getElementById('filterSource').value = '';
             document.getElementById('filterDateFrom').value = '';
             document.getElementById('filterDateTo').value = '';
+            document.getElementById('filterStarred').value = '';
             currentFilters = {};
             currentPage = 1;
             loadArticles();
@@ -915,6 +951,7 @@
                 if (currentFilters.source) params.append('source', currentFilters.source);
                 if (currentFilters.date_from) params.append('date_from', currentFilters.date_from);
                 if (currentFilters.date_to) params.append('date_to', currentFilters.date_to);
+                if (currentFilters.starred !== null && currentFilters.starred !== undefined) params.append('starred', currentFilters.starred.toString());
 
                 const response = await fetch(`${API_BASE}/api/articles?${params}`);
                 if (!response.ok) {
@@ -993,10 +1030,15 @@
                 const isNew = highlightId && article.id === highlightId;
                 const cardClass = isNew ? 'article-card newly-added' : 'article-card';
                 
+                const starIcon = article.starred ? '⭐' : '☆';
+                const starClass = article.starred ? 'starred' : '';
                 return `
                     <div class="${cardClass}" id="article-${article.id}" onclick="showArticle('${article.id}')">
                         <div class="article-header">
                             <div class="article-title">${escapeHtml(title)}</div>
+                            <button class="star-button ${starClass}" onclick="event.stopPropagation(); toggleStar('${article.id}')" title="${article.starred ? '取消星标' : '加星'}">
+                                ${starIcon}
+                            </button>
                         </div>
                         <div class="article-meta">
                             <div class="article-meta-item">
@@ -1105,6 +1147,9 @@
                     throw new Error('Failed to load article');
                 }
                 const article = await articleResponse.json();
+                
+                // Update star button in modal
+                updateModalStarButton(article.starred);
                 
                 // Determine which language to load based on global setting and availability
                 let langToLoad = currentLanguage;
@@ -1358,6 +1403,7 @@
                     document.getElementById('filterSource').value = '';
                     document.getElementById('filterDateFrom').value = '';
                     document.getElementById('filterDateTo').value = '';
+                    document.getElementById('filterStarred').value = '';
                     currentFilters = {};
                     
                     // Reload filter options
@@ -1410,6 +1456,62 @@
                 addArticleFromUrl();
             }
         });
+
+        function updateModalStarButton(starred) {
+            const modalStarBtn = document.getElementById('modalStarBtn');
+            if (modalStarBtn) {
+                modalStarBtn.textContent = starred ? '⭐' : '☆';
+                modalStarBtn.style.color = starred ? '#ffd700' : '#ccc';
+                modalStarBtn.title = starred ? '取消星标' : '加星';
+            }
+        }
+
+        async function toggleStarFromModal() {
+            if (!currentArticleId) return;
+            await toggleStar(currentArticleId);
+        }
+
+        async function toggleStar(articleId) {
+            try {
+                const response = await fetch(`${API_BASE}/api/articles/${articleId}/star`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || '切换星标失败');
+                }
+
+                const updatedArticle = await response.json();
+                
+                // Update the star button in the card
+                const card = document.getElementById(`article-${articleId}`);
+                if (card) {
+                    const starButton = card.querySelector('.star-button');
+                    if (starButton) {
+                        starButton.textContent = updatedArticle.starred ? '⭐' : '☆';
+                        starButton.classList.toggle('starred', updatedArticle.starred);
+                        starButton.title = updatedArticle.starred ? '取消星标' : '加星';
+                    }
+                }
+
+                // Update the star button in the modal if modal is open
+                if (currentArticleId === articleId) {
+                    updateModalStarButton(updatedArticle.starred);
+                }
+
+                // If we're filtering by starred status, reload articles
+                if (currentFilters.starred !== null && currentFilters.starred !== undefined) {
+                    await loadArticles();
+                }
+            } catch (error) {
+                console.error('Error toggling star:', error);
+                alert('切换星标失败: ' + error.message);
+            }
+        }
 
         // Close modal on outside click
         document.getElementById('articleModal').addEventListener('click', function(e) {

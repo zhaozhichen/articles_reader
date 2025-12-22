@@ -1,7 +1,7 @@
 """SQLAlchemy database models."""
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, Text
+from sqlalchemy import Column, String, DateTime, Text, Boolean
 from app.database import Base
 
 class Article(Base):
@@ -18,6 +18,7 @@ class Article(Base):
     original_url = Column(String, nullable=False, unique=True)
     html_file_en = Column(String, nullable=False)  # Path to English HTML file
     html_file_zh = Column(String, nullable=True)  # Path to Chinese HTML file (optional)
+    starred = Column(Boolean, nullable=False, default=False, index=True)  # Starred status
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 

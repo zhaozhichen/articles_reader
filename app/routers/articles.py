@@ -30,6 +30,7 @@ async def list_articles(
     source: Optional[str] = Query(None, description="Filter by source"),
     date_from: Optional[str] = Query(None, description="Filter by date from (YYYY-MM-DD)"),
     date_to: Optional[str] = Query(None, description="Filter by date to (YYYY-MM-DD)"),
+    starred: Optional[bool] = Query(None, description="Filter by starred status (true/false)"),
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(20, ge=1, le=100, description="Items per page"),
     sort: str = Query("date_desc", description="Sort order: date_desc, date_asc"),
@@ -76,6 +77,8 @@ async def list_articles(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Invalid date_to format. Use YYYY-MM-DD"
                 )
+        if starred is not None:
+            query = query.filter(Article.starred == starred)
         
         # Get total count
         total = query.count()
@@ -269,6 +272,43 @@ async def get_filter_options(
 
 class AddArticleRequest(BaseModel):
     url: str
+
+@router.put("/{article_id}/star")
+async def toggle_star_article(
+    article_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Toggle the starred status of an article.
+    
+    - **article_id**: ID of the article to star/unstar
+    """
+    try:
+        article = db.query(Article).filter(Article.id == article_id).first()
+        if not article:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Article with id {article_id} not found"
+            )
+        
+        # Toggle starred status
+        article.starred = not article.starred
+        db.commit()
+        db.refresh(article)
+        
+        logger.info(f"Toggled star status for article {article_id}: {article.starred}")
+        
+        return ArticleResponse.model_validate(article)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error toggling star status for article {article_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error toggling star status: {str(e)}"
+        )
 
 @router.delete("/{article_id}")
 async def delete_article(
