@@ -26,7 +26,7 @@ from pathlib import Path
 # Add parent directory to path to import app modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app.services.scrapers import get_scraper_for_url, NewYorkerScraper
+from app.services.scrapers import get_scraper_for_url, NewYorkerScraper, AtlanticScraper
 from app.services.translator import translate_html_with_gemini_retry
 from app.utils.logger import setup_script_logger
 
@@ -407,23 +407,28 @@ def save_article_html(url, target_date=None, output_dir='.', translate=False, ge
         return (None, None)
 
 
-def find_articles_by_date(target_date, max_pages=100, max_workers=10):
+def find_articles_by_date(target_date, source='newyorker', max_pages=100, max_workers=10):
     """
     Find all articles published on the target date.
     
-    Currently only supports New Yorker. Other sources may be added in the future.
+    Supports New Yorker and Atlantic sources.
     
     Args:
         target_date: datetime.date object for the target date
-        max_pages: Maximum number of pages to check
+        source: Source to search ('newyorker' or 'atlantic')
+        max_pages: Maximum number of pages to check (only used for New Yorker)
         max_workers: Number of concurrent workers for fetching articles
     
     Returns:
         List of article URLs matching the date
     """
-    # Use New Yorker scraper for date-based search
-    scraper = NewYorkerScraper()
-    return scraper.find_articles_by_date(target_date, max_pages=max_pages, max_workers=max_workers)
+    if source.lower() == 'atlantic':
+        scraper = AtlanticScraper()
+        return scraper.find_articles_by_date(target_date, max_workers=max_workers)
+    else:
+        # Default to New Yorker
+        scraper = NewYorkerScraper()
+        return scraper.find_articles_by_date(target_date, max_pages=max_pages, max_workers=max_workers)
 
 
 def process_single_url(url, output_dir='.', translate=False, gemini_api_key=None, zh_dir=None):
@@ -549,12 +554,24 @@ def main():
     # Create output directory if it doesn't exist
     os.makedirs(args.output_dir, exist_ok=True)
     
-    # Find matching articles
-    matching_urls = find_articles_by_date(
+    # Find matching articles from both sources
+    logger.info(f"\nSearching for articles from New Yorker...")
+    newyorker_urls = find_articles_by_date(
         target_date,
+        source='newyorker',
         max_pages=args.max_pages,
         max_workers=args.max_workers
     )
+    
+    logger.info(f"\nSearching for articles from Atlantic...")
+    atlantic_urls = find_articles_by_date(
+        target_date,
+        source='atlantic',
+        max_workers=args.max_workers
+    )
+    
+    # Combine URLs from both sources
+    matching_urls = newyorker_urls + atlantic_urls
     
     # Save HTML files for each matching article
     if matching_urls:

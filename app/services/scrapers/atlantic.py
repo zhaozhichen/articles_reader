@@ -2,10 +2,11 @@
 import json
 import re
 import logging
-from datetime import datetime
-from typing import Optional, Tuple
+from datetime import datetime, date
+from typing import Optional, Tuple, List
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from app.services.scrapers.base import BaseScraper
 
 logger = logging.getLogger(__name__)
@@ -84,7 +85,6 @@ class AtlanticScraper(BaseScraper):
         article_date = self._extract_publish_date(soup)
         if not article_date:
             # Fallback to today's date if no date found
-            from datetime import date
             article_date = date.today()
         
         # Extract category
@@ -297,4 +297,131 @@ class AtlanticScraper(BaseScraper):
                     pass
         
         return None
+    
+    def extract_article_urls_from_page(self, html_content: str) -> List[str]:
+        """Extract article URLs from the /latest page."""
+        urls = []
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # Find all article links - Atlantic uses <article> tags with links inside
+        articles = soup.find_all('article')
+        for article in articles:
+            # Find the main link in the article
+            link = article.find('a', href=True)
+            if link:
+                url = link.get('href')
+                if url:
+                    # Make sure it's a full URL
+                    if url.startswith('/'):
+                        url = f'https://www.theatlantic.com{url}'
+                    # Only include actual article URLs
+                    if url.startswith('https://www.theatlantic.com/') and \
+                       not url.endswith('/latest') and \
+                       '/latest?' not in url and \
+                       url not in urls:
+                        urls.append(url)
+        
+        # Also try to find links in list items (backup method)
+        if not urls:
+            list_items = soup.find_all('li')
+            for li in list_items:
+                link = li.find('a', href=True)
+                if link:
+                    url = link.get('href')
+                    if url and url.startswith('https://www.theatlantic.com/') and \
+                       not url.endswith('/latest') and \
+                       '/latest?' not in url and \
+                       url not in urls:
+                        urls.append(url)
+        
+        return urls
+    
+    def get_article_date(self, url: str) -> Tuple[Optional[date], Optional[date]]:
+        """Fetch an article and return its publish and modified dates.
+        
+        Returns a tuple of (publish_date, modified_date) where either may be None.
+        """
+        html = self.fetch_page(url, verbose=False)
+        if html:
+            soup = BeautifulSoup(html, 'html.parser')
+            publish_date = self._extract_publish_date(soup)
+            # Atlantic doesn't typically provide modified_date in a separate field
+            # So we return (publish_date, None)
+            return (publish_date, None)
+        return (None, None)
+    
+    def find_articles_by_date(self, target_date: date, max_workers: int = 10) -> List[str]:
+        """
+        Find all articles published on the target date.
+        
+        Atlantic's /latest page shows articles in reverse chronological order.
+        We only need to check the first page since it contains all recent articles.
+        
+        Args:
+            target_date: datetime.date object for the target date
+            max_workers: Number of concurrent workers for fetching articles
+        
+        Returns:
+            List of article URLs matching the date
+        """
+        matching_urls = []
+        
+        logger.info(f"Searching for Atlantic articles published on {target_date}...")
+        logger.info(f"Fetching /latest page...")
+        
+        # Fetch the /latest page
+        url = "https://www.theatlantic.com/latest/"
+        html = self.fetch_page(url, verbose=True)
+        if not html:
+            logger.error(f"Failed to fetch /latest page")
+            return []
+        
+        article_urls = self.extract_article_urls_from_page(html)
+        
+        if not article_urls:
+            logger.warning(f"No articles found on /latest page")
+            return []
+        
+        logger.info(f"Found {len(article_urls)} articles on /latest page. Checking dates...")
+        
+        # Check publish dates for articles
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_url = {
+                executor.submit(self.get_article_date, url): url 
+                for url in article_urls
+            }
+            
+            completed = 0
+            for future in as_completed(future_to_url):
+                article_url = future_to_url[future]
+                completed += 1
+                try:
+                    publish_date, modified_date = future.result()
+                    
+                    # Check if publish date matches target
+                    matches = False
+                    date_str = ""
+                    if publish_date == target_date:
+                        matches = True
+                        date_str = f"publish: {publish_date}"
+                    elif publish_date:
+                        date_str = f"publish: {publish_date}"
+                    
+                    if matches:
+                        matching_urls.append(article_url)
+                        logger.info(f"  [{completed}/{len(article_urls)}] ✓ {article_url} ({date_str})")
+                    elif publish_date:
+                        # Determine if article is newer or older
+                        if publish_date > target_date:
+                            logger.debug(f"  [{completed}/{len(article_urls)}] ✗ {article_url} ({date_str}, newer)")
+                        else:
+                            logger.debug(f"  [{completed}/{len(article_urls)}] ✗ {article_url} ({date_str}, older)")
+                    else:
+                        # Couldn't determine date
+                        logger.debug(f"  [{completed}/{len(article_urls)}] ✗ {article_url} (date: not found)")
+                except Exception as e:
+                    logger.error(f"  [{completed}/{len(article_urls)}] Error processing {article_url}: {e}", exc_info=True)
+        
+        logger.info(f"\nFound {len(matching_urls)} Atlantic articles published on {target_date}")
+        return matching_urls
 
