@@ -333,6 +333,19 @@
             flex-direction: column;
         }
 
+        /* Source-specific background colors */
+        .article-card.newyorker {
+            background: #FFFEF0;
+        }
+
+        .article-card.nytimes {
+            background: #F5F5F5;
+        }
+
+        .article-card.atlantic {
+            background: #E8F4F8;
+        }
+
         .article-card:hover {
             transform: translateY(-4px);
             box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
@@ -1028,7 +1041,23 @@
                 }
                 
                 const isNew = highlightId && article.id === highlightId;
-                const cardClass = isNew ? 'article-card newly-added' : 'article-card';
+                
+                // Map source name to CSS class
+                let sourceClass = '';
+                if (article.source) {
+                    const sourceLower = article.source.toLowerCase();
+                    if (sourceLower.includes('new yorker')) {
+                        sourceClass = 'newyorker';
+                    } else if (sourceLower.includes('new york times') || sourceLower.includes('nytimes')) {
+                        sourceClass = 'nytimes';
+                    } else if (sourceLower.includes('atlantic')) {
+                        sourceClass = 'atlantic';
+                    }
+                }
+                
+                const cardClass = isNew 
+                    ? `article-card ${sourceClass} newly-added` 
+                    : `article-card ${sourceClass}`;
                 
                 const starIcon = article.starred ? '⭐' : '☆';
                 const starClass = article.starred ? 'starred' : '';
