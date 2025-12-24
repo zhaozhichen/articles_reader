@@ -998,12 +998,15 @@
                 if (append) {
                     // Append articles to existing grid
                     displayArticles(data.articles, highlightId, true);
-                    // Increment page for next load
+                    // Increment page for next load (use API response page if available)
+                    if (data.page && data.page > currentPage) {
+                        currentPage = data.page;
+                    }
                     currentPage++;
                 } else {
                     // Replace grid content
                     displayArticles(data.articles, highlightId, false);
-                    currentPage = data.page;
+                    currentPage = data.page || 1;
                 }
 
                 // Setup infinite scroll observer after articles are displayed
@@ -1029,6 +1032,23 @@
 
         function displayArticles(articles, highlightId = null, append = false) {
             const grid = document.getElementById('articlesGrid');
+            
+            // If appending, filter out articles that already exist in the DOM
+            if (append) {
+                const existingIds = new Set();
+                const existingCards = grid.querySelectorAll('.article-card');
+                existingCards.forEach(card => {
+                    const id = card.id.replace('article-', '');
+                    if (id) existingIds.add(id);
+                });
+                // Filter out articles that already exist
+                articles = articles.filter(article => !existingIds.has(article.id));
+                if (articles.length === 0) {
+                    // No new articles to add
+                    return;
+                }
+            }
+            
             const articlesHTML = articles.map(article => {
                 const dateStr = new Date(article.date).toLocaleDateString('zh-CN');
                 // Always use Chinese title when currentLanguage is 'zh', fallback to English

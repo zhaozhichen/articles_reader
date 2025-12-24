@@ -4,7 +4,7 @@ import json
 import re
 from pathlib import Path
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 from sqlalchemy.orm import Session
 from bs4 import BeautifulSoup
 from app.database import SessionLocal
@@ -13,6 +13,36 @@ from app.config import HTML_DIR_EN, HTML_DIR_ZH
 from app.services.scrapers import get_scraper_for_url
 
 logger = logging.getLogger(__name__)
+
+def normalize_url(url):
+    """Normalize URL by removing query parameters, fragments, and trailing slashes.
+    
+    Args:
+        url: URL string to normalize
+        
+    Returns:
+        Normalized URL string, or None if input is empty/invalid
+    """
+    if not url or not url.strip():
+        return None
+    
+    try:
+        parsed = urlparse(url.strip())
+        # Remove query and fragment
+        normalized = urlunparse((
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            '',  # params
+            '',  # query
+            ''   # fragment
+        ))
+        # Remove trailing slash
+        if normalized.endswith('/') and len(normalized) > len(parsed.scheme) + 3:  # Keep single /
+            normalized = normalized[:-1]
+        return normalized
+    except Exception:
+        return url.strip() if url else None
 
 def extract_category_from_url(url, html=None):
     """Extract category from URL path or HTML using appropriate scraper.
@@ -223,12 +253,35 @@ def import_from_subdirs_inline(en_dir, zh_dir):
                 if category == 'na':
                     category = source
                 
+                # Check for duplicates using multiple strategies
                 existing = None
+                
+                # Strategy 1: Exact URL match
                 if url:
                     existing = db.query(Article).filter(Article.original_url == url).first()
                 
+                # Strategy 2: Normalized URL match (handles query params, fragments, etc.)
+                if not existing and url:
+                    normalized_url = normalize_url(url)
+                    if normalized_url:
+                        # Check against normalized versions of existing URLs
+                        all_articles = db.query(Article).filter(Article.original_url != '').all()
+                        for article in all_articles:
+                            if normalize_url(article.original_url) == normalized_url:
+                                existing = article
+                                break
+                
+                # Strategy 3: Same filename (handles re-imports)
                 if not existing:
                     existing = db.query(Article).filter(Article.html_file_en == en_path).first()
+                
+                # Strategy 4: Same title + author + date (handles URL variations)
+                if not existing:
+                    existing = db.query(Article).filter(
+                        Article.title == title_en,
+                        Article.author == author,
+                        Article.date == parsed['date']
+                    ).first()
                 
                 if existing:
                     existing.title = title_en
