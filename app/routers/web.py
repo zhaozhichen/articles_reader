@@ -101,8 +101,8 @@ async def get_logs(
                             message=line
                         ))
                 
-                # Reverse to show most recent first
-                log_entries.reverse()
+                # Keep logs in chronological order (oldest first, newest last)
+                # This way the newest logs appear at the bottom, which is more intuitive
                 
         except Exception as e:
             logger.error(f"Error reading log file: {e}")
