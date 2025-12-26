@@ -528,6 +528,53 @@
             padding-right: 30px;
         }
 
+        .article-url-section {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 15px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border: 1px solid #e0e0e0;
+        }
+
+        .article-url-section .url-display {
+            flex: 1;
+            font-size: 13px;
+            color: #667eea;
+            word-break: break-all;
+            font-family: 'Courier New', monospace;
+        }
+
+        .copy-url-button {
+            padding: 6px 10px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+            white-space: nowrap;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 32px;
+        }
+
+        .copy-url-button:hover {
+            background: #5568d3;
+        }
+
+        .copy-url-button:active {
+            transform: scale(0.95);
+        }
+
+        .copy-url-button.copied {
+            background: #28a745;
+        }
+
         .modal-header h2 {
             color: #333;
             flex: 1;
@@ -823,6 +870,10 @@
                     <button id="modalDeleteBtn" onclick="deleteArticle()" style="padding: 8px 16px; background: #dc3545; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; margin-right: 10px;">删除文章</button>
                     <button class="modal-close" onclick="closeModal()">&times;</button>
                 </div>
+            </div>
+            <div class="article-url-section" id="articleUrlSection" style="display: none;">
+                <span class="url-display" id="articleUrlDisplay"></span>
+                <button class="copy-url-button" id="copyUrlButton" onclick="copyArticleUrl()">📋</button>
             </div>
             <div class="article-content" id="articleContent">
                 <div class="loading">加载中...</div>
@@ -1200,6 +1251,9 @@
                 // Update star button in modal
                 updateModalStarButton(article.starred);
                 
+                // Update URL section
+                updateArticleUrl(article.original_url);
+                
                 // Determine which language to load based on global setting and availability
                 let langToLoad = currentLanguage;
                 // If global is Chinese but no Chinese version exists, use English
@@ -1376,6 +1430,63 @@
         function closeModal() {
             document.getElementById('articleModal').classList.remove('show');
             document.getElementById('articleContent').innerHTML = '<div class="loading">加载中...</div>';
+            // Hide URL section
+            document.getElementById('articleUrlSection').style.display = 'none';
+        }
+
+        function updateArticleUrl(url) {
+            const urlSection = document.getElementById('articleUrlSection');
+            const urlDisplay = document.getElementById('articleUrlDisplay');
+            const copyButton = document.getElementById('copyUrlButton');
+            
+            if (url && url.trim()) {
+                urlDisplay.textContent = url;
+                urlSection.style.display = 'flex';
+                // Reset copy button state
+                copyButton.textContent = '📋';
+                copyButton.classList.remove('copied');
+            } else {
+                urlSection.style.display = 'none';
+            }
+        }
+
+        async function copyArticleUrl() {
+            const urlDisplay = document.getElementById('articleUrlDisplay');
+            const url = urlDisplay.textContent;
+            const copyButton = document.getElementById('copyUrlButton');
+            
+            if (!url) return;
+            
+            try {
+                // Use the Clipboard API if available
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    await navigator.clipboard.writeText(url);
+                } else {
+                    // Fallback for older browsers
+                    const textArea = document.createElement('textarea');
+                    textArea.value = url;
+                    textArea.style.position = 'fixed';
+                    textArea.style.opacity = '0';
+                    document.body.appendChild(textArea);
+                    textArea.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(textArea);
+                }
+                
+                // Update button to show success
+                const originalText = copyButton.textContent;
+                copyButton.textContent = '✓';
+                copyButton.classList.add('copied');
+                
+                // Reset after 2 seconds
+                setTimeout(() => {
+                    copyButton.textContent = originalText;
+                    copyButton.classList.remove('copied');
+                }, 2000);
+            } catch (error) {
+                console.error('Failed to copy URL:', error);
+                alert('复制失败，请手动复制\n\nFailed to copy, please copy manually');
+            }
         }
 
         function escapeHtml(text) {
