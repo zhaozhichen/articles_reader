@@ -548,3 +548,26 @@ async def add_article_from_url(
             detail=f"Error adding article: {str(e)}"
         )
 
+@router.post("/import")
+async def import_articles_manually():
+    """
+    Manually trigger import of articles from HTML files.
+    
+    This endpoint scans the HTML directory and imports any articles that are not yet in the database.
+    Useful for importing manually added articles or recovering from interrupted imports.
+    """
+    try:
+        logger.info("Manual import triggered via API")
+        import_count = await asyncio.to_thread(import_articles_from_directory, HTML_DIR_EN)
+        logger.info(f"Manual import completed: {import_count} articles processed")
+        return {
+            "message": "Import completed successfully",
+            "articles_processed": import_count
+        }
+    except Exception as e:
+        logger.error(f"Error in manual import: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error importing articles: {str(e)}"
+        )
+

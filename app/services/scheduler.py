@@ -219,28 +219,31 @@ def start_scheduler():
         logger.warning(f"Could not start recovery task: {e}")
 
 async def recover_unimported_articles():
-    """Recover and import any articles that were saved but not imported due to interruption."""
+    """Recover and import any articles that were saved but not imported due to interruption.
+    
+    This function checks ALL articles in the directory, not just today's articles.
+    This ensures manually added articles (regardless of date) are imported on server startup.
+    """
     try:
         # Wait a bit for the server to fully start
         await asyncio.sleep(5)
         
-        logger.info("Checking for unimported articles from today...")
-        eastern = pytz.timezone('America/New_York')
-        today_et = datetime.now(eastern).date()
+        logger.info("Checking for unimported articles (all dates)...")
         
-        # Check if there are articles in the directory but not in database
-        en_files = list(HTML_DIR_EN.glob(f"{today_et.strftime('%Y-%m-%d')}*.html"))
-        if en_files:
-            db = SessionLocal()
-            try:
-                # Count articles in database for today
-                db_count = db.query(Article).filter(Article.date == today_et).count()
-                if len(en_files) > db_count:
-                    logger.info(f"Found {len(en_files)} article files but only {db_count} in database. Importing missing articles...")
-                    import_count = await asyncio.to_thread(import_articles_from_directory, HTML_DIR_EN)
-                    logger.info(f"Recovery import completed: {import_count} articles imported")
-            finally:
-                db.close()
+        # Get all HTML files in the directory
+        en_files = list(HTML_DIR_EN.glob("*.html"))
+        
+        if not en_files:
+            logger.info("No HTML files found in directory")
+            return
+        
+        logger.info(f"Found {len(en_files)} HTML files in directory")
+        
+        # Import all articles - the import function will skip duplicates
+        # This ensures any manually added articles are imported
+        import_count = await asyncio.to_thread(import_articles_from_directory, HTML_DIR_EN)
+        logger.info(f"Recovery import completed: {import_count} articles processed (new or updated)")
+        
     except Exception as e:
         logger.error(f"Error in recovery task: {e}", exc_info=True)
 

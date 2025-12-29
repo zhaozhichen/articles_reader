@@ -55,19 +55,36 @@ YYYY-MM-DD_source_category_author_title.html
 
 ### 导入文章
 
-运行导入脚本：
+#### 方法1：自动导入（推荐）
+
+**服务器启动时自动导入**：
+- 服务器启动时会自动检查并导入所有未导入的文章（包括手动添加的，无论日期）
+- 无需任何操作，手动添加的文章会在服务器重启后自动出现
+
+#### 方法2：通过前端界面导入
+
+**手动上传文件后立即导入**：
+1. 将HTML文件上传到 `/home/tensor/projects/articles/data/html/en/` 目录
+2. 在前端界面点击"导入文章"按钮
+3. 文章会自动导入到数据库并显示在列表中
+
+#### 方法3：通过API手动触发导入
 
 ```bash
-cd /home/tensor/projects/articles
-./scripts/import_manual_articles.sh
+# 使用curl
+curl -X POST http://localhost:8000/api/articles/import
 ```
 
-或者：
+#### 方法4：通过命令行脚本
 
 ```bash
 cd /home/tensor/projects/ktizo
 docker compose exec articles python scripts/import_from_subdirs.py
 ```
+
+**注意**：
+- 通过URL添加文章（前端"手动添加文章"功能）会自动触发导入，无需手动操作
+- 如果直接上传文件到目录，可以等待服务器重启自动导入，或立即点击"导入文章"按钮
 
 ### 移动现有文件
 

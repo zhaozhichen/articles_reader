@@ -939,6 +939,11 @@
                                 <button id="addArticleBtn" onclick="addArticleFromUrl()">添加文章</button>
                             </div>
                             <div id="addArticleMessage" class="add-article-message"></div>
+                            <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #e0e0e0;">
+                                <p style="margin: 0 0 10px 0; font-size: 13px; color: #666;">如果直接上传HTML文件到目录，请点击下方按钮导入：</p>
+                                <button id="importArticlesBtn" onclick="importArticles()" style="padding: 8px 16px; background: #28a745; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600;">📥 导入文章</button>
+                                <div id="importMessage" class="add-article-message" style="margin-top: 10px;"></div>
+                            </div>
                         </div>
 
                         <div style="margin-top: 15px; margin-bottom: 10px;">
@@ -1794,6 +1799,53 @@
                 addArticleFromUrl();
             }
         });
+
+        async function importArticles() {
+            const importBtn = document.getElementById('importArticlesBtn');
+            const messageDiv = document.getElementById('importMessage');
+
+            // Disable button and show loading
+            importBtn.disabled = true;
+            importBtn.textContent = '导入中...';
+            messageDiv.className = 'add-article-message info';
+            messageDiv.style.display = 'block';
+            messageDiv.textContent = '正在导入文章，请稍候...';
+
+            try {
+                const response = await fetch(`${API_BASE}/api/articles/import`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    messageDiv.className = 'add-article-message success';
+                    messageDiv.textContent = `导入成功！处理了 ${data.articles_processed} 篇文章。正在刷新列表...`;
+                    
+                    // Reload articles to show newly imported ones
+                    currentPage = 1;
+                    await loadArticles();
+                    
+                    // Hide message after 5 seconds
+                    setTimeout(() => {
+                        messageDiv.style.display = 'none';
+                    }, 5000);
+                } else {
+                    messageDiv.className = 'add-article-message error';
+                    messageDiv.textContent = data.detail || '导入失败';
+                }
+            } catch (error) {
+                console.error('Error importing articles:', error);
+                messageDiv.className = 'add-article-message error';
+                messageDiv.textContent = '导入时发生错误: ' + error.message;
+            } finally {
+                importBtn.disabled = false;
+                importBtn.textContent = '📥 导入文章';
+            }
+        }
 
         function updateModalStarButton(starred) {
             const modalStarBtn = document.getElementById('modalStarBtn');
