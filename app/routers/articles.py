@@ -31,6 +31,8 @@ async def list_articles(
     date_from: Optional[str] = Query(None, description="Filter by date from (YYYY-MM-DD)"),
     date_to: Optional[str] = Query(None, description="Filter by date to (YYYY-MM-DD)"),
     starred: Optional[bool] = Query(None, description="Filter by starred status (true/false)"),
+    search: Optional[str] = Query(None, description="Search keyword in article titles"),
+    lang: Optional[str] = Query(None, description="Filter by language: 'en' or 'zh'"),
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(20, ge=1, le=100, description="Items per page"),
     sort: str = Query("date_desc", description="Sort order: date_desc, date_asc"),
@@ -44,6 +46,9 @@ async def list_articles(
     - **source**: Filter by source
     - **date_from**: Filter articles from this date (YYYY-MM-DD)
     - **date_to**: Filter articles to this date (YYYY-MM-DD)
+    - **starred**: Filter by starred status (true/false)
+    - **search**: Search keyword in article titles (searches both title and title_zh)
+    - **lang**: Filter by language ('en' for English only, 'zh' for Chinese only)
     - **page**: Page number (starts from 1)
     - **limit**: Items per page (max 100)
     - **sort**: Sort order (date_desc, date_asc)
@@ -51,6 +56,40 @@ async def list_articles(
     try:
         # Build query
         query = db.query(Article)
+        
+        logger.info(f"Received request: search='{search}', lang='{lang}', page={page}, limit={limit}")
+        
+        # Apply search filter first (search in the appropriate language field based on lang parameter)
+        if search and search.strip():
+            search_term = f"%{search.strip()}%"
+            logger.info(f"Searching for '{search.strip()}' in language '{lang}'")
+            if lang == "zh":
+                # Search only in Chinese title when in Chinese mode
+                query = query.filter(Article.title_zh.isnot(None), Article.title_zh != "")
+                query = query.filter(Article.title_zh.ilike(search_term))
+                logger.info(f"Applied filter: title_zh contains '{search.strip()}'")
+            elif lang == "en":
+                # Search only in English title when in English mode
+                query = query.filter(Article.title.isnot(None), Article.title != "")
+                query = query.filter(Article.title.ilike(search_term))
+                logger.info(f"Applied filter: title contains '{search.strip()}'")
+            else:
+                # If no lang specified, search in both
+                query = query.filter(
+                    or_(
+                        Article.title.ilike(search_term),
+                        Article.title_zh.ilike(search_term)
+                    )
+                )
+                logger.info(f"Applied filter: title or title_zh contains '{search.strip()}'")
+        elif lang:
+            # Apply language filter only if no search (to show all articles in that language)
+            if lang == "zh":
+                # Only return articles with Chinese title
+                query = query.filter(Article.title_zh.isnot(None), Article.title_zh != "")
+            elif lang == "en":
+                # Only return articles with English title (all articles should have this, but filter for consistency)
+                query = query.filter(Article.title.isnot(None), Article.title != "")
         
         # Apply filters
         if category:
@@ -82,6 +121,7 @@ async def list_articles(
         
         # Get total count
         total = query.count()
+        logger.info(f"Total articles matching filters: {total}")
         
         # Apply sorting
         if sort == "date_asc":
@@ -92,6 +132,7 @@ async def list_articles(
         # Apply pagination
         offset = (page - 1) * limit
         articles = query.offset(offset).limit(limit).all()
+        logger.info(f"Returning {len(articles)} articles for page {page}")
         
         # Calculate total pages
         total_pages = (total + limit - 1) // limit

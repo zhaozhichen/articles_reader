@@ -74,6 +74,61 @@
             background: #e0e0e0;
         }
 
+        .search-section {
+            background: #fff3e0;
+            border-radius: 8px;
+            padding: 20px;
+            margin-top: 20px;
+            border: 2px solid #ff9800;
+        }
+
+        .search-section h3 {
+            color: #e65100;
+            margin-bottom: 15px;
+        }
+
+        .search-form {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .search-form input {
+            flex: 1;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+
+        .search-form input:focus {
+            outline: none;
+            border-color: #ff9800;
+        }
+
+        .search-form button {
+            padding: 12px 24px;
+            background: #ff9800;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .search-form button:hover {
+            background: #f57c00;
+        }
+
+        .search-form button.secondary {
+            background: #6c757d;
+        }
+
+        .search-form button.secondary:hover {
+            background: #5a6268;
+        }
+
         .filters-section {
             background: #f8f9fa;
             border-radius: 8px;
@@ -760,6 +815,15 @@
                 <button onclick="showLogs()" style="padding: 8px 16px; background: #6c757d; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600;">📋 查看日志</button>
             </div>
 
+            <div class="search-section">
+                <h3>🔍 搜索文章</h3>
+                <div class="search-form">
+                    <input type="text" id="searchInput" placeholder="输入关键词搜索文章标题..." onkeypress="handleSearchKeyPress(event)" />
+                    <button onclick="performSearch()">搜索</button>
+                    <button class="secondary" onclick="clearSearch()">清除</button>
+                </div>
+            </div>
+
             <div class="filters-section">
                 <h3>🔍 过滤器</h3>
                 <div class="filters-grid">
@@ -888,6 +952,7 @@
         let currentLimit = 20;
         let totalPages = 1;
         let currentFilters = {};
+        let currentSearch = null;  // Current search keyword
         let currentArticleId = null;
         let currentArticleLang = 'en';
         let filterOptions = {};
@@ -951,7 +1016,35 @@
             currentLanguage = lang;
             document.getElementById('langEn').classList.toggle('active', lang === 'en');
             document.getElementById('langZh').classList.toggle('active', lang === 'zh');
+            // Reload articles with current search and filters
             loadArticles();
+        }
+
+        function performSearch() {
+            const searchInput = document.getElementById('searchInput');
+            const keyword = searchInput.value.trim();
+            
+            if (keyword) {
+                currentSearch = keyword;
+            } else {
+                currentSearch = null;
+            }
+            
+            currentPage = 1;
+            loadArticles();
+        }
+
+        function clearSearch() {
+            document.getElementById('searchInput').value = '';
+            currentSearch = null;
+            currentPage = 1;
+            loadArticles();
+        }
+
+        function handleSearchKeyPress(event) {
+            if (event.key === 'Enter') {
+                performSearch();
+            }
         }
 
         function applyFilters() {
@@ -986,10 +1079,12 @@
             const grid = document.getElementById('articlesGrid');
             const loadMoreIndicator = document.getElementById('loadMoreIndicator');
             
+            // Determine which page to use
+            let pageToUse = currentPage;
             if (!append) {
                 // Reset for new search/filter
                 grid.innerHTML = '<div class="loading">加载中...</div>';
-                currentPage = 1;
+                pageToUse = 1;
                 hasMore = true;
                 // Clear existing articles
                 if (observer) {
@@ -1005,10 +1100,17 @@
 
             try {
                 const params = new URLSearchParams({
-                    page: currentPage.toString(),
+                    page: pageToUse.toString(),
                     limit: currentLimit.toString(),
                     sort: 'date_desc'
                 });
+
+                // Add language filter when searching (to filter results by language)
+                // Add search keyword if present
+                if (currentSearch && currentSearch.trim()) {
+                    params.append('lang', currentLanguage);
+                    params.append('search', currentSearch.trim());
+                }
 
                 if (currentFilters.category) params.append('category', currentFilters.category);
                 if (currentFilters.author) params.append('author', currentFilters.author);
@@ -1057,7 +1159,7 @@
                 } else {
                     // Replace grid content
                     displayArticles(data.articles, highlightId, false);
-                    currentPage = data.page || 1;
+                    currentPage = data.page || pageToUse;
                 }
 
                 // Setup infinite scroll observer after articles are displayed
