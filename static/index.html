@@ -216,6 +216,64 @@
             margin-bottom: 15px;
         }
 
+        .advanced-features {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 0;
+            margin-top: 20px;
+            border: 2px solid #e0e0e0;
+            overflow: hidden;
+        }
+
+        .advanced-features-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px 20px;
+            cursor: pointer;
+            user-select: none;
+            background: #667eea;
+            color: white;
+            border-radius: 8px;
+            transition: background 0.2s;
+        }
+
+        .advanced-features-header:hover {
+            background: #5568d3;
+        }
+
+        .advanced-features-header h3 {
+            margin: 0;
+            color: white;
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .advanced-features-toggle {
+            font-size: 18px;
+            transition: transform 0.3s;
+            display: inline-block;
+        }
+
+        .advanced-features-toggle.expanded {
+            transform: rotate(180deg);
+        }
+
+        .advanced-features-content {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease-out;
+        }
+
+        .advanced-features-content.expanded {
+            max-height: 5000px;
+            transition: max-height 0.5s ease-in;
+        }
+
+        .advanced-features-inner {
+            padding: 20px;
+        }
+
         .add-article-form {
             display: flex;
             gap: 10px;
@@ -811,73 +869,83 @@
                 </div>
             </div>
 
-            <div style="margin-top: 15px; margin-bottom: 10px;">
-                <button onclick="showLogs()" style="padding: 8px 16px; background: #6c757d; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600;">📋 查看日志</button>
-            </div>
+            <div class="advanced-features">
+                <div class="advanced-features-header" onclick="toggleAdvancedFeatures()">
+                    <h3>⚙️ 高级功能</h3>
+                    <span class="advanced-features-toggle" id="advancedFeaturesToggle">▼</span>
+                </div>
+                <div class="advanced-features-content" id="advancedFeaturesContent">
+                    <div class="advanced-features-inner">
+                        <div class="search-section">
+                            <h3>🔍 搜索文章</h3>
+                            <div class="search-form">
+                                <input type="text" id="searchInput" placeholder="输入关键词搜索文章标题..." onkeypress="handleSearchKeyPress(event)" />
+                                <button onclick="performSearch()">搜索</button>
+                                <button class="secondary" onclick="clearSearch()">清除</button>
+                            </div>
+                        </div>
 
-            <div class="search-section">
-                <h3>🔍 搜索文章</h3>
-                <div class="search-form">
-                    <input type="text" id="searchInput" placeholder="输入关键词搜索文章标题..." onkeypress="handleSearchKeyPress(event)" />
-                    <button onclick="performSearch()">搜索</button>
-                    <button class="secondary" onclick="clearSearch()">清除</button>
-                </div>
-            </div>
+                        <div class="filters-section">
+                            <h3>🔍 过滤器</h3>
+                            <div class="filters-grid">
+                                <div class="filter-group">
+                                    <label>星标</label>
+                                    <select id="filterStarred">
+                                        <option value="">全部</option>
+                                        <option value="true">带星</option>
+                                        <option value="false">不带星</option>
+                                    </select>
+                                </div>
+                                <div class="filter-group">
+                                    <label>类别</label>
+                                    <select id="filterCategory">
+                                        <option value="">全部</option>
+                                    </select>
+                                </div>
+                                <div class="filter-group">
+                                    <label>作者</label>
+                                    <select id="filterAuthor">
+                                        <option value="">全部</option>
+                                    </select>
+                                </div>
+                                <div class="filter-group">
+                                    <label>出处</label>
+                                    <select id="filterSource">
+                                        <option value="">全部</option>
+                                    </select>
+                                </div>
+                                <div class="filter-group">
+                                    <label>开始日期</label>
+                                    <input type="date" id="filterDateFrom">
+                                </div>
+                                <div class="filter-group">
+                                    <label>结束日期</label>
+                                    <input type="date" id="filterDateTo">
+                                </div>
+                            </div>
+                            <div class="filter-actions">
+                                <button onclick="applyFilters()">应用过滤器</button>
+                                <button class="secondary" onclick="resetFilters()">重置</button>
+                            </div>
+                        </div>
 
-            <div class="filters-section">
-                <h3>🔍 过滤器</h3>
-                <div class="filters-grid">
-                    <div class="filter-group">
-                        <label>星标</label>
-                        <select id="filterStarred">
-                            <option value="">全部</option>
-                            <option value="true">带星</option>
-                            <option value="false">不带星</option>
-                        </select>
-                    </div>
-                    <div class="filter-group">
-                        <label>类别</label>
-                        <select id="filterCategory">
-                            <option value="">全部</option>
-                        </select>
-                    </div>
-                    <div class="filter-group">
-                        <label>作者</label>
-                        <select id="filterAuthor">
-                            <option value="">全部</option>
-                        </select>
-                    </div>
-                    <div class="filter-group">
-                        <label>出处</label>
-                        <select id="filterSource">
-                            <option value="">全部</option>
-                        </select>
-                    </div>
-                    <div class="filter-group">
-                        <label>开始日期</label>
-                        <input type="date" id="filterDateFrom">
-                    </div>
-                    <div class="filter-group">
-                        <label>结束日期</label>
-                        <input type="date" id="filterDateTo">
-                    </div>
-                </div>
-                <div class="filter-actions">
-                    <button onclick="applyFilters()">应用过滤器</button>
-                    <button class="secondary" onclick="resetFilters()">重置</button>
-                </div>
-            </div>
+                        <div class="add-article-section">
+                            <h3>➕ 手动添加文章</h3>
+                            <div class="add-article-form">
+                                <div class="form-group">
+                                    <label for="articleUrl">文章 URL</label>
+                                    <input type="url" id="articleUrl" placeholder="https://www.newyorker.com/... 或 https://www.nytimes.com/... 或 https://www.theatlantic.com/..." />
+                                </div>
+                                <button id="addArticleBtn" onclick="addArticleFromUrl()">添加文章</button>
+                            </div>
+                            <div id="addArticleMessage" class="add-article-message"></div>
+                        </div>
 
-            <div class="add-article-section">
-                <h3>➕ 手动添加文章</h3>
-                <div class="add-article-form">
-                    <div class="form-group">
-                        <label for="articleUrl">文章 URL</label>
-                        <input type="url" id="articleUrl" placeholder="https://www.newyorker.com/... 或 https://www.nytimes.com/... 或 https://www.theatlantic.com/..." />
+                        <div style="margin-top: 15px; margin-bottom: 10px;">
+                            <button onclick="showLogs()" style="padding: 8px 16px; background: #6c757d; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600;">📋 查看日志</button>
+                        </div>
                     </div>
-                    <button id="addArticleBtn" onclick="addArticleFromUrl()">添加文章</button>
                 </div>
-                <div id="addArticleMessage" class="add-article-message"></div>
             </div>
         </div>
 
@@ -1010,6 +1078,14 @@
             if (filterOptions.date_range.max) {
                 document.getElementById('filterDateTo').max = filterOptions.date_range.max;
             }
+        }
+
+        function toggleAdvancedFeatures() {
+            const content = document.getElementById('advancedFeaturesContent');
+            const toggle = document.getElementById('advancedFeaturesToggle');
+            
+            content.classList.toggle('expanded');
+            toggle.classList.toggle('expanded');
         }
 
         function setLanguage(lang) {
