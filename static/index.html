@@ -74,6 +74,41 @@
             background: #e0e0e0;
         }
 
+        .header-actions {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+
+        .star-filter-button {
+            padding: 8px 16px;
+            background: #f0f0f0;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 18px;
+            transition: all 0.2s;
+            height: 36px;
+            line-height: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 40px;
+        }
+
+        .star-filter-button.active {
+            background: #ffd700;
+            color: #333;
+        }
+
+        .star-filter-button:hover:not(.active) {
+            background: #e0e0e0;
+        }
+
+        .star-filter-button.active:hover {
+            background: #ffed4e;
+        }
+
         .search-section {
             background: #fff3e0;
             border-radius: 8px;
@@ -862,10 +897,13 @@
         <div class="header">
             <div class="header-top">
                 <h1>📰 Articles Reader</h1>
-                <div class="language-toggle">
-                    <span style="color: #666; font-size: 14px; margin-right: 5px;">语言:</span>
-                    <button id="langZh" class="active" onclick="setLanguage('zh')">中文</button>
-                    <button id="langEn" onclick="setLanguage('en')">English</button>
+                <div class="header-actions">
+                    <button id="starFilterBtn" class="star-filter-button" onclick="toggleStarFilter()" title="筛选星标文章">⭐</button>
+                    <div class="language-toggle">
+                        <span style="color: #666; font-size: 14px; margin-right: 5px;">语言:</span>
+                        <button id="langZh" class="active" onclick="setLanguage('zh')">中文</button>
+                        <button id="langEn" onclick="setLanguage('en')">English</button>
+                    </div>
                 </div>
             </div>
 
@@ -888,14 +926,6 @@
                         <div class="filters-section">
                             <h3>🔍 过滤器</h3>
                             <div class="filters-grid">
-                                <div class="filter-group">
-                                    <label>星标</label>
-                                    <select id="filterStarred">
-                                        <option value="">全部</option>
-                                        <option value="true">带星</option>
-                                        <option value="false">不带星</option>
-                                    </select>
-                                </div>
                                 <div class="filter-group">
                                     <label>类别</label>
                                     <select id="filterCategory">
@@ -1101,6 +1131,34 @@
             loadArticles();
         }
 
+        function toggleStarFilter() {
+            const starBtn = document.getElementById('starFilterBtn');
+            
+            // 如果当前已经过滤星标（显示带星），则取消过滤
+            if (currentFilters.starred === true) {
+                currentFilters.starred = null;
+                starBtn.classList.remove('active');
+            } else {
+                // 否则设置为只显示带星的文章
+                currentFilters.starred = true;
+                starBtn.classList.add('active');
+            }
+            
+            currentPage = 1;
+            loadArticles();
+        }
+
+        function updateStarFilterButton() {
+            const starBtn = document.getElementById('starFilterBtn');
+            if (starBtn) {
+                if (currentFilters.starred === true) {
+                    starBtn.classList.add('active');
+                } else {
+                    starBtn.classList.remove('active');
+                }
+            }
+        }
+
         function performSearch() {
             const searchInput = document.getElementById('searchInput');
             const keyword = searchInput.value.trim();
@@ -1129,15 +1187,17 @@
         }
 
         function applyFilters() {
-            const starredValue = document.getElementById('filterStarred').value;
+            // Preserve current starred filter (set by title bar button)
+            const currentStarred = currentFilters.starred !== undefined ? currentFilters.starred : null;
             currentFilters = {
                 category: document.getElementById('filterCategory').value || null,
                 author: document.getElementById('filterAuthor').value || null,
                 source: document.getElementById('filterSource').value || null,
                 date_from: document.getElementById('filterDateFrom').value || null,
                 date_to: document.getElementById('filterDateTo').value || null,
-                starred: starredValue === '' ? null : (starredValue === 'true')
+                starred: currentStarred
             };
+            updateStarFilterButton();
             currentPage = 1;
             loadArticles();
         }
@@ -1148,8 +1208,8 @@
             document.getElementById('filterSource').value = '';
             document.getElementById('filterDateFrom').value = '';
             document.getElementById('filterDateTo').value = '';
-            document.getElementById('filterStarred').value = '';
             currentFilters = {};
+            updateStarFilterButton();
             currentPage = 1;
             loadArticles();
         }
@@ -1746,8 +1806,8 @@
                     document.getElementById('filterSource').value = '';
                     document.getElementById('filterDateFrom').value = '';
                     document.getElementById('filterDateTo').value = '';
-                    document.getElementById('filterStarred').value = '';
                     currentFilters = {};
+                    updateStarFilterButton();
                     
                     // Reload filter options
                     await loadFilterOptions();
@@ -2020,6 +2080,9 @@
         // Set initial language button state
         document.getElementById('langZh').classList.add('active');
         document.getElementById('langEn').classList.remove('active');
+        
+        // Initialize star filter button state
+        updateStarFilterButton();
         
         loadFilterOptions();
         loadArticles();
