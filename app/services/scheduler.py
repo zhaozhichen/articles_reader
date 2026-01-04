@@ -6,6 +6,7 @@ import sys
 from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
+import threading
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz
@@ -17,6 +18,9 @@ from app.services.importer import import_articles_from_directory
 logger = logging.getLogger(__name__)
 
 scheduler = AsyncIOScheduler()
+_active_processes = set()
+_active_tasks = set()
+_active_lock = threading.Lock()
 
 async def run_daily_scrape(target_date_str: Optional[str] = None):
     """Run the article scraping script for a specific date or today's date (Eastern Time).
@@ -25,6 +29,10 @@ async def run_daily_scrape(target_date_str: Optional[str] = None):
         target_date_str: Optional date string in YYYY-MM-DD format. If None, uses today's date.
     """
     try:
+        task = asyncio.current_task()
+        with _active_lock:
+            _active_tasks.add(task)
+        process_holder = {"proc": None}
         # Get target date
         if target_date_str:
             date_str = target_date_str
@@ -89,6 +97,9 @@ async def run_daily_scrape(target_date_str: Optional[str] = None):
                 bufsize=0,  # Unbuffered for real-time output
                 universal_newlines=True
             )
+            with _active_lock:
+                _active_processes.add(process)
+            process_holder["proc"] = process
             
             # Read output line by line and log it in real-time (for any remaining print statements)
             output_lines = []
@@ -181,6 +192,12 @@ async def run_daily_scrape(target_date_str: Optional[str] = None):
             logger.info(f"Imported {import_count} articles (saved before error)")
         except Exception as import_error:
             logger.error(f"Error importing articles after error: {str(import_error)}", exc_info=True)
+    finally:
+        with _active_lock:
+            _active_tasks.discard(task)
+            proc = process_holder.get("proc")
+            if proc:
+                _active_processes.discard(proc)
 
 def start_scheduler():
     """Start the scheduler with daily jobs at 7 PM and 11 PM Eastern Time."""
@@ -247,12 +264,47 @@ async def recover_unimported_articles():
     except Exception as e:
         logger.error(f"Error in recovery task: {e}", exc_info=True)
 
-def stop_scheduler():
+def force_terminate_running_jobs():
+    """Force terminate any running scrape tasks and their subprocesses."""
+    with _active_lock:
+        running_procs = list(_active_processes)
+        running_tasks = list(_active_tasks)
+    killed_processes = 0
+    cancelled_tasks = 0
+    
+    for proc in running_procs:
+        try:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+                killed_processes += 1
+        except Exception as e:
+            logger.error(f"Error killing subprocess {getattr(proc, 'pid', 'unknown')}: {e}", exc_info=True)
+    
+    for task in running_tasks:
+        if not task.done():
+            task.cancel()
+            cancelled_tasks += 1
+    
+    with _active_lock:
+        for proc in running_procs:
+            _active_processes.discard(proc)
+        for task in running_tasks:
+            _active_tasks.discard(task)
+    
+    logger.warning(f"Force-terminated {killed_processes} running subprocess(es); cancelled {cancelled_tasks} task(s)")
+    return {"killed_processes": killed_processes, "cancelled_tasks": cancelled_tasks}
+
+def stop_scheduler(force: bool = False):
     """Stop the scheduler gracefully, waiting for running jobs to complete."""
     # Get running jobs
     running_jobs = scheduler.get_jobs()
     if running_jobs:
         logger.info(f"Shutting down scheduler. {len(running_jobs)} job(s) scheduled.")
+    
+    if force:
+        logger.warning("Force-stopping scheduler and terminating running jobs")
+        force_terminate_running_jobs()
     
     # Shutdown scheduler - this will cancel pending jobs but running jobs will continue
     # Use wait=False to allow running jobs to complete, but cancel pending ones

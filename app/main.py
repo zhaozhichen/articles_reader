@@ -94,7 +94,7 @@ async def lifespan(app: FastAPI):
     yield
     
     # Shutdown
-    stop_scheduler()
+    stop_scheduler(force=True)
     
     # Shutdown
     logger.info("Shutting down Articles backend server...")
