@@ -447,7 +447,7 @@ async def add_article_from_url(
         if not scraper:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"URL not supported. Supported sources: New Yorker, New York Times, Atlantic"
+                detail=f"URL not supported. Supported sources: New Yorker, New York Times, Atlantic, 公众号"
             )
         
         # Check if article already exists
@@ -475,12 +475,15 @@ async def add_article_from_url(
             str(script_path),
             "--url",
             url,
-            "--translate",
             "--output-dir",
             str(HTML_DIR_EN),
             "--zh-dir",
             str(HTML_DIR_ZH)
         ]
+        
+        # For WeChat articles, do not translate
+        if scraper.get_source_slug() != 'wechat':
+            cmd.append("--translate")
         
         # Prepare environment variables
         env = os.environ.copy()

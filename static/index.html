@@ -494,6 +494,10 @@
             background: #E8F4F8;
         }
 
+        .article-card.wechat {
+            background: #FFE4E6;
+        }
+
         .article-card:hover {
             transform: translateY(-4px);
             box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
@@ -1366,6 +1370,8 @@
                         sourceClass = 'nytimes';
                     } else if (sourceLower.includes('atlantic')) {
                         sourceClass = 'atlantic';
+                    } else if (sourceLower.includes('公众号') || sourceLower.includes('wechat')) {
+                        sourceClass = 'wechat';
                     }
                 }
                 
@@ -1526,7 +1532,9 @@
                 const doc = parser.parseFromString(htmlContent, 'text/html');
                 
                 // Try to find the main article content
-                let articleBody = doc.querySelector('article') || 
+                // For WeChat articles, look for js_content div first
+                let articleBody = doc.querySelector('#js_content') ||
+                                 doc.querySelector('article') || 
                                  doc.querySelector('.body__container') ||
                                  doc.querySelector('.container--body-inner') ||
                                  doc.querySelector('main') ||

@@ -4,12 +4,14 @@ from app.services.scrapers.base import BaseScraper
 from app.services.scrapers.newyorker import NewYorkerScraper
 from app.services.scrapers.nytimes import NewYorkTimesScraper
 from app.services.scrapers.atlantic import AtlanticScraper
+from app.services.scrapers.wechat import WeChatScraper
 
 # Registry of all available scrapers
 SCRAPERS: list[BaseScraper] = [
     NewYorkerScraper(),
     NewYorkTimesScraper(),
     AtlanticScraper(),
+    WeChatScraper(),
 ]
 
 __all__ = [
@@ -17,6 +19,7 @@ __all__ = [
     'NewYorkerScraper',
     'NewYorkTimesScraper',
     'AtlanticScraper',
+    'WeChatScraper',
     'get_scraper_for_url',
     'SCRAPERS',
 ]

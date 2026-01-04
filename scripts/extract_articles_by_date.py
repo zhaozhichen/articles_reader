@@ -26,7 +26,7 @@ from pathlib import Path
 # Add parent directory to path to import app modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app.services.scrapers import get_scraper_for_url, NewYorkerScraper, AtlanticScraper
+from app.services.scrapers import get_scraper_for_url, NewYorkerScraper, AtlanticScraper, WeChatScraper
 from app.services.translator import translate_html_with_gemini_retry
 from app.utils.logger import setup_script_logger
 
@@ -530,12 +530,14 @@ def main():
         scraper = get_scraper_for_url(args.url)
         if not scraper:
             logger.error(f"Error: No scraper available for URL: {args.url}")
-            logger.error(f"Supported sources: New Yorker, New York Times, Atlantic")
+            logger.error(f"Supported sources: New Yorker, New York Times, Atlantic, 公众号")
             sys.exit(1)
+        # For WeChat articles, do not translate
+        should_translate = args.translate and scraper.get_source_slug() != 'wechat'
         return process_single_url(
             args.url,
             output_dir=args.output_dir,
-            translate=args.translate,
+            translate=should_translate,
             gemini_api_key=args.gemini_api_key,
             zh_dir=args.zh_dir
         )
