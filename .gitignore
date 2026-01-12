@@ -58,3 +58,5 @@ data/logs/
 .DS_Store
 Thumbs.db
 
+data/audio/*.mp3
+data/audio/*.txt

@@ -17,12 +17,14 @@ DATA_DIR = BASE_DIR / "data"
 HTML_DIR = DATA_DIR / "html"
 HTML_DIR_EN = HTML_DIR / "en"
 HTML_DIR_ZH = HTML_DIR / "zh"
+AUDIO_DIR = DATA_DIR / "audio"
 
 # Ensure directories exist
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 HTML_DIR.mkdir(parents=True, exist_ok=True)
 HTML_DIR_EN.mkdir(parents=True, exist_ok=True)
 HTML_DIR_ZH.mkdir(parents=True, exist_ok=True)
+AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
 # Gemini API key (for translation)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")

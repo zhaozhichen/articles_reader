@@ -447,7 +447,7 @@ async def add_article_from_url(
         if not scraper:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"URL not supported. Supported sources: New Yorker, New York Times, Atlantic, 公众号"
+                detail=f"URL not supported. Supported sources: New Yorker, New York Times, Atlantic, 公众号, 小宇宙"
             )
         
         # Check if article already exists
@@ -481,8 +481,8 @@ async def add_article_from_url(
             str(HTML_DIR_ZH)
         ]
         
-        # For WeChat articles, do not translate
-        if scraper.get_source_slug() != 'wechat':
+        # For WeChat and Xiaoyuzhou articles, do not translate
+        if scraper.get_source_slug() not in ['wechat', 'xiaoyuzhou']:
             cmd.append("--translate")
         
         # Prepare environment variables
@@ -493,6 +493,9 @@ async def add_article_from_url(
         logger.info(f"Running command: {' '.join(cmd)}")
         
         # Run the script in a thread pool to avoid blocking
+        # For Xiaoyuzhou, increase timeout to 30 minutes (audio download + transcription + summary generation can take time)
+        timeout_seconds = 1800 if scraper.get_source_slug() == 'xiaoyuzhou' else 600
+        
         result = await asyncio.to_thread(
             subprocess.run,
             cmd,
@@ -500,7 +503,7 @@ async def add_article_from_url(
             env=env,
             capture_output=True,
             text=True,
-            timeout=600  # 10 minute timeout
+            timeout=timeout_seconds
         )
         
         if result.returncode != 0:
@@ -526,6 +529,20 @@ async def add_article_from_url(
             new_article = db.query(Article).order_by(Article.created_at.desc()).first()
         
         if new_article:
+            # Mark manually uploaded articles as starred by default
+            try:
+                if not new_article.starred:
+                    new_article.starred = True
+                    db.commit()
+                    logger.info(f"Marked manually uploaded article as starred: {new_article.id}")
+            except Exception as e:
+                logger.warning(f"Failed to mark article as starred: {e}", exc_info=True)
+                # Don't fail the whole request if starring fails
+                try:
+                    db.rollback()
+                except:
+                    pass
+            
             return {
                 "message": "Article added successfully",
                 "article": ArticleResponse.model_validate(new_article)
@@ -538,14 +555,24 @@ async def add_article_from_url(
         
     except HTTPException:
         raise
-    except subprocess.TimeoutExpired:
-        logger.error("Scraping script timed out")
+    except subprocess.TimeoutExpired as e:
+        # Get scraper again in case it's not in scope
+        try:
+            scraper_check = get_scraper_for_url(url)
+            timeout_minutes = 30 if scraper_check and scraper_check.get_source_slug() == 'xiaoyuzhou' else 10
+        except:
+            timeout_minutes = 30
+        logger.error(f"Scraping script timed out after {timeout_minutes} minutes")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Scraping timed out after 10 minutes"
+            detail=f"Scraping timed out after {timeout_minutes} minutes. For Xiaoyuzhou episodes, this may take longer due to audio download and transcription."
         )
     except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
         logger.error(f"Error adding article from URL: {str(e)}", exc_info=True)
+        logger.error(f"Full traceback: {error_trace}")
+        # Ensure we return JSON error response, not HTML
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error adding article: {str(e)}"

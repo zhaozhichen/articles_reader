@@ -565,6 +565,10 @@
             background: #FFE4E6;
         }
 
+        .article-card.xiaoyuzhou {
+            background: #E8F5E8;
+        }
+
         .article-card:hover {
             transform: translateY(-4px);
             box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
@@ -844,6 +848,8 @@
         .article-html-content {
             max-width: 100%;
             overflow-x: auto;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
         }
 
         .article-html-content img {
@@ -896,6 +902,103 @@
         .article-html-content pre {
             padding: 15px;
             overflow-x: auto;
+        }
+
+        .article-html-content h3 {
+            color: #667eea;
+            font-size: 18px;
+        }
+
+        .article-html-content h4 {
+            color: #555;
+            font-size: 16px;
+        }
+
+        .article-html-content .shownotes {
+            line-height: 1.8;
+        }
+
+        .article-html-content .shownotes p {
+            margin-bottom: 15px;
+        }
+
+        .article-html-content .shownotes ul {
+            margin-bottom: 15px;
+            padding-left: 20px;
+        }
+
+        .article-html-content .shownotes li {
+            margin-bottom: 8px;
+        }
+
+        .article-html-content .summary-content,
+        .article-html-content .transcript-content {
+            line-height: 1.8;
+            background: #f9f9f9;
+            padding: 20px;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+            margin: 20px 0;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+        }
+
+        .article-html-content .summary-content p,
+        .article-html-content .transcript-content p {
+            margin-bottom: 15px;
+            max-width: 100%;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+        }
+
+        .article-html-content .summary-content ol,
+        .article-html-content .transcript-content ol {
+            margin-bottom: 15px;
+            padding-left: 25px;
+            line-height: 1.8;
+        }
+
+        .article-html-content .summary-content li,
+        .article-html-content .transcript-content li {
+            margin-bottom: 10px;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+        }
+
+        .article-html-content .summary-content h3,
+        .article-html-content .transcript-content h3 {
+            margin-top: 20px;
+            margin-bottom: 10px;
+            color: #667eea;
+        }
+
+        .article-html-content .summary-content h4,
+        .article-html-content .transcript-content h4 {
+            margin-top: 15px;
+            margin-bottom: 8px;
+            color: #555;
+        }
+
+        .article-html-content .summary-content hr,
+        .article-html-content .transcript-content hr {
+            margin: 20px 0;
+            border: none;
+            border-top: 1px solid #ddd;
+        }
+
+        .article-html-content .summary-content strong,
+        .article-html-content .transcript-content strong {
+            font-weight: 600;
+            color: #333;
+        }
+
+        .article-html-content .summary-content em,
+        .article-html-content .transcript-content em {
+            font-style: italic;
+        }
+
+        .article-html-content .section {
+            margin-bottom: 40px;
         }
 
         .pagination {
@@ -1042,6 +1145,7 @@
                                     <li>New York Times: <code>https://www.nytimes.com/...</code></li>
                                     <li>The Atlantic: <code>https://www.theatlantic.com/...</code></li>
                                     <li>公众号: <code>https://mp.weixin.qq.com/s/...</code></li>
+                                    <li>小宇宙: <code>https://xiaoyuzhou.fm/...</code></li>
                                 </ul>
                             </div>
                             <div class="add-article-form">
@@ -1470,6 +1574,8 @@
                         sourceClass = 'atlantic';
                     } else if (sourceLower.includes('公众号') || sourceLower.includes('wechat')) {
                         sourceClass = 'wechat';
+                    } else if (sourceLower.includes('小宇宙') || sourceLower.includes('xiaoyuzhou')) {
+                        sourceClass = 'xiaoyuzhou';
                     }
                 }
                 
@@ -1873,16 +1979,29 @@
             addBtn.textContent = '处理中...';
             messageDiv.className = 'add-article-message info';
             messageDiv.style.display = 'block';
-            messageDiv.textContent = '正在抓取文章并翻译，这可能需要几分钟...';
+            
+            // Check if it's a Xiaoyuzhou URL for longer timeout
+            const isXiaoyuzhou = url.includes('xiaoyuzhou');
+            const timeoutMs = isXiaoyuzhou ? 1800000 : 600000; // 30 minutes for Xiaoyuzhou, 10 minutes for others
+            messageDiv.textContent = isXiaoyuzhou 
+                ? '正在处理小宇宙播客（下载音频、转录、生成总结），这可能需要15-30分钟，请耐心等待...'
+                : '正在抓取文章并翻译，这可能需要几分钟...';
 
             try {
+                // Create AbortController for timeout
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+                
                 const response = await fetch(`${API_BASE}/api/articles/add-from-url`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ url: url })
+                    body: JSON.stringify({ url: url }),
+                    signal: controller.signal
                 });
+                
+                clearTimeout(timeoutId);
 
                 // Check if response is JSON before parsing
                 const contentType = response.headers.get('content-type');
@@ -1952,7 +2071,15 @@
             } catch (error) {
                 console.error('Error adding article:', error);
                 messageDiv.className = 'add-article-message error';
-                messageDiv.textContent = '添加文章时发生错误: ' + error.message;
+                if (error.name === 'AbortError') {
+                    messageDiv.textContent = isXiaoyuzhou 
+                        ? '请求超时。小宇宙播客处理时间较长（需要下载音频、转录、生成总结），可能仍在后台处理中。请稍后刷新页面查看结果。'
+                        : '请求超时，请稍后重试或刷新页面查看结果。';
+                } else if (error.message.includes('非JSON响应')) {
+                    messageDiv.textContent = '服务器返回了错误页面。这可能是由于处理时间过长导致的。对于小宇宙播客，处理可能需要15-30分钟。请稍后刷新页面查看结果，或检查服务器日志。';
+                } else {
+                    messageDiv.textContent = '添加文章时发生错误: ' + error.message;
+                }
             } finally {
                 addBtn.disabled = false;
                 addBtn.textContent = '添加文章';

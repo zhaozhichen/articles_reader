@@ -14,6 +14,7 @@ from app.config import BASE_DIR, HTML_DIR, HTML_DIR_EN, HTML_DIR_ZH
 from app.database import SessionLocal
 from app.models import Article
 from app.services.importer import import_articles_from_directory
+from app.services.audio_cleanup import cleanup_old_audio_files
 
 logger = logging.getLogger(__name__)
 
@@ -223,9 +224,20 @@ def start_scheduler():
         replace_existing=True
     )
     
+    # Schedule audio cleanup job daily at 2:00 AM Eastern Time
+    scheduler.add_job(
+        cleanup_old_audio_files,
+        trigger=CronTrigger(hour=2, minute=0, timezone=eastern),
+        id='audio_cleanup',
+        name='Audio file cleanup (5 day TTL)',
+        replace_existing=True,
+        kwargs={'ttl_days': 5}
+    )
+    
     scheduler.start()
     logger.info("Scheduler started. Daily scrape scheduled for 7:00 PM Eastern Time")
     logger.info("Backup scrape scheduled for 11:00 PM Eastern Time")
+    logger.info("Audio cleanup scheduled for 2:00 AM Eastern Time (5 day TTL)")
     
     # On startup, check if there are any unimported articles from today
     # This helps recover from interrupted scraping tasks

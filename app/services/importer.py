@@ -108,7 +108,7 @@ def parse_filename_for_import(filename):
     # Old format has 4+ parts: date_category_author_title
     
     # Known source slugs for detection
-    known_sources = ['newyorker', 'nytimes']
+    known_sources = ['newyorker', 'nytimes', 'xiaoyuzhou']
     
     if len(parts) >= 5 and parts[1] in known_sources:
         # New format: date_source_category_author_title
@@ -154,6 +154,13 @@ def extract_metadata_from_html_for_import(html_path, prefer_h1=False):
             canonical = soup.find('link', rel='canonical')
             if canonical and canonical.get('href'):
                 metadata['url'] = canonical.get('href')
+            else:
+                # Try to find URL in metadata section (for Xiaoyuzhou and other custom HTML)
+                metadata_div = soup.find('div', class_='metadata')
+                if metadata_div:
+                    link = metadata_div.find('a')
+                    if link and link.get('href'):
+                        metadata['url'] = link.get('href')
         
         # Extract title - prefer h1 for translated content
         if prefer_h1:
@@ -248,6 +255,12 @@ def import_from_subdirs_inline(en_dir, zh_dir):
                             source = "New Yorker"
                         elif source_slug == 'nytimes':
                             source = "New York Times"
+                        elif source_slug == 'xiaoyuzhou':
+                            source = "小宇宙"
+                        elif source_slug == 'wechat':
+                            source = "公众号"
+                        elif source_slug == 'atlantic':
+                            source = "Atlantic"
                 
                 # Convert 'na' category to source name
                 if category == 'na':
