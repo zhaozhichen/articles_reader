@@ -18,6 +18,13 @@ from app.schemas import ArticleResponse, ArticleListResponse, FilterOptionsRespo
 from app.config import HTML_DIR, HTML_DIR_EN, HTML_DIR_ZH, BASE_DIR, GEMINI_API_KEY
 from app.services.importer import import_articles_from_directory
 from app.services.scrapers import get_scraper_for_url
+from bs4 import BeautifulSoup
+
+try:
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -577,6 +584,124 @@ async def add_article_from_url(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error adding article: {str(e)}"
         )
+
+
+class AskAIRequest(BaseModel):
+    question: str
+
+
+@router.post("/{article_id}/ask-ai")
+async def ask_ai_about_article(
+    article_id: str,
+    request: AskAIRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Ask AI a question about an article using Gemini-3-flash-preview.
+    
+    - **article_id**: Article ID
+    - **question**: User's question about the article
+    """
+    try:
+        if not GEMINI_AVAILABLE:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Gemini API not available. Please install google-generativeai."
+            )
+        
+        api_key = GEMINI_API_KEY or os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="GEMINI_API_KEY not configured"
+            )
+        
+        # Get article
+        article = db.query(Article).filter(Article.id == article_id).first()
+        if not article:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Article not found"
+            )
+        
+        # Get article HTML content
+        en_path = Path(article.html_file_en)
+        if en_path.parts[0] == 'en':
+            filename = en_path.name
+            file_path = HTML_DIR_EN / filename
+        else:
+            file_path = HTML_DIR_EN / en_path.name
+        
+        if not file_path.exists():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Article HTML file not found"
+            )
+        
+        # Read HTML content
+        with open(file_path, 'r', encoding='utf-8') as f:
+            html_content = f.read()
+        
+        # Convert HTML to plain text
+        soup = BeautifulSoup(html_content, 'html.parser')
+        # Remove script and style elements
+        for script in soup(["script", "style"]):
+            script.decompose()
+        # Get text
+        text_content = soup.get_text(separator='\n', strip=True)
+        
+        # Limit text length to avoid token limits (keep first 50000 characters)
+        if len(text_content) > 50000:
+            text_content = text_content[:50000] + "\n\n[内容已截断...]"
+        
+        # Configure Gemini
+        genai.configure(api_key=api_key)
+        
+        # Use gemini-3-flash-preview model
+        try:
+            model = genai.GenerativeModel("models/gemini-3-flash-preview")
+        except Exception as e:
+            logger.warning(f"Could not use gemini-3-flash-preview: {e}")
+            # Fallback to other models
+            try:
+                model = genai.GenerativeModel("models/gemini-2.5-flash")
+            except:
+                model = genai.GenerativeModel("gemini-pro")
+        
+        # Build prompt
+        prompt = f"""请基于以下文章内容回答用户的问题。请用中文回答。
+
+文章标题：{article.title}
+文章作者：{article.author}
+文章分类：{article.category}
+
+文章内容：
+{text_content}
+
+用户问题：{request.question}
+
+请基于文章内容提供准确、详细的回答。如果文章内容中没有相关信息，请明确说明。"""
+        
+        # Generate response
+        logger.info(f"Asking AI about article {article_id}: {request.question[:50]}...")
+        response = model.generate_content(prompt)
+        
+        answer = response.text if hasattr(response, 'text') else str(response)
+        
+        return {
+            "answer": answer,
+            "article_title": article.title
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error asking AI about article: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error asking AI: {str(e)}"
+        )
+
 
 @router.post("/import")
 async def import_articles_manually():

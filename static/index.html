@@ -1220,6 +1220,7 @@
                 <div class="modal-actions">
                     <button id="modalStarBtn" onclick="toggleStarFromModal()" style="background: none; border: none; font-size: 28px; cursor: pointer; padding: 5px; line-height: 1; color: #ccc; transition: all 0.2s; margin-right: 10px;" title="加星">☆</button>
                     <button id="modalLangToggle" onclick="toggleModalLanguage()" style="padding: 8px 16px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; margin-right: 10px;">切换到中文</button>
+                    <button id="modalAskAIBtn" onclick="toggleAskAI()" style="padding: 8px 16px; background: #28a745; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; margin-right: 10px;">🤖 Ask AI</button>
                     <button id="modalDeleteBtn" onclick="deleteArticle()" style="padding: 8px 16px; background: #dc3545; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; margin-right: 10px;">删除文章</button>
                     <button class="modal-close" onclick="closeModal()">&times;</button>
                 </div>
@@ -1227,6 +1228,21 @@
             <div class="article-url-section" id="articleUrlSection" style="display: none;">
                 <span class="url-display" id="articleUrlDisplay"></span>
                 <button class="copy-url-button" id="copyUrlButton" onclick="copyArticleUrl()">📋</button>
+            </div>
+            <div class="ask-ai-section" id="askAISection" style="display: none; margin: 20px 0; padding: 20px; background: #f9f9f9; border-radius: 8px; border: 1px solid #e0e0e0;">
+                <h3 style="margin-top: 0; margin-bottom: 15px; color: #333;">🤖 Ask AI</h3>
+                <div style="margin-bottom: 15px;">
+                    <textarea id="aiQuestionInput" placeholder="请输入您的问题..." style="width: 100%; min-height: 80px; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; font-family: inherit; resize: vertical;"></textarea>
+                </div>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <button id="askAISubmitBtn" onclick="submitAIQuestion()" style="padding: 10px 20px; background: #28a745; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600;">提问</button>
+                    <button onclick="toggleAskAI()" style="padding: 10px 20px; background: #6c757d; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px;">关闭</button>
+                    <span id="aiLoadingIndicator" style="display: none; color: #667eea; font-size: 14px;">正在思考...</span>
+                </div>
+                <div id="aiAnswerContainer" style="margin-top: 20px; padding: 15px; background: white; border-radius: 6px; border: 1px solid #e0e0e0; display: none;">
+                    <div style="font-weight: 600; margin-bottom: 10px; color: #667eea;">AI 回答：</div>
+                    <div id="aiAnswerContent" style="line-height: 1.8; color: #333; white-space: pre-wrap; word-wrap: break-word;"></div>
+                </div>
             </div>
             <div class="article-content" id="articleContent">
                 <div class="loading">加载中...</div>
@@ -1887,6 +1903,101 @@
             document.getElementById('articleContent').innerHTML = '<div class="loading">加载中...</div>';
             // Hide URL section
             document.getElementById('articleUrlSection').style.display = 'none';
+            // Hide Ask AI section
+            document.getElementById('askAISection').style.display = 'none';
+            // Clear AI question and answer
+            document.getElementById('aiQuestionInput').value = '';
+            document.getElementById('aiAnswerContainer').style.display = 'none';
+        }
+        
+        function toggleAskAI() {
+            const askAISection = document.getElementById('askAISection');
+            if (askAISection.style.display === 'none') {
+                askAISection.style.display = 'block';
+            } else {
+                askAISection.style.display = 'none';
+                // Clear question and answer when closing
+                document.getElementById('aiQuestionInput').value = '';
+                document.getElementById('aiAnswerContainer').style.display = 'none';
+            }
+        }
+        
+        async function submitAIQuestion() {
+            if (!currentArticleId) {
+                alert('请先打开一篇文章');
+                return;
+            }
+            
+            const questionInput = document.getElementById('aiQuestionInput');
+            const question = questionInput.value.trim();
+            
+            if (!question) {
+                alert('请输入您的问题');
+                return;
+            }
+            
+            const submitBtn = document.getElementById('askAISubmitBtn');
+            const loadingIndicator = document.getElementById('aiLoadingIndicator');
+            const answerContainer = document.getElementById('aiAnswerContainer');
+            const answerContent = document.getElementById('aiAnswerContent');
+            
+            // Disable button and show loading
+            submitBtn.disabled = true;
+            submitBtn.textContent = '提问中...';
+            loadingIndicator.style.display = 'inline';
+            answerContainer.style.display = 'none';
+            
+            try {
+                const url = `${API_BASE}/api/articles/${currentArticleId}/ask-ai`;
+                console.log('Asking AI:', url, 'Question:', question);
+                
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ question: question })
+                });
+                
+                console.log('Response status:', response.status, response.statusText);
+                
+                if (!response.ok) {
+                    let errorMessage = '提问失败';
+                    try {
+                        const error = await response.json();
+                        errorMessage = error.detail || error.message || '提问失败';
+                    } catch (e) {
+                        // If response is not JSON, try to get text
+                        try {
+                            const errorText = await response.text();
+                            errorMessage = errorText || `HTTP ${response.status}: ${response.statusText}`;
+                        } catch (e2) {
+                            errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+                        }
+                    }
+                    console.error('API Error:', errorMessage);
+                    throw new Error(errorMessage);
+                }
+                
+                const data = await response.json();
+                console.log('AI Response received');
+                
+                // Display answer
+                answerContent.textContent = data.answer;
+                answerContainer.style.display = 'block';
+                
+                // Scroll to answer
+                answerContainer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                
+            } catch (error) {
+                console.error('Error asking AI:', error);
+                console.error('Current article ID:', currentArticleId);
+                alert('提问失败: ' + error.message);
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = '提问';
+                loadingIndicator.style.display = 'none';
+            }
         }
 
         function updateArticleUrl(url) {
