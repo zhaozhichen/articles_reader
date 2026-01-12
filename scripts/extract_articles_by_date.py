@@ -582,6 +582,25 @@ def save_xiaoyuzhou_episode(url, result, scraper, date_str, output_dir, zh_dir, 
             f.write(html_content)
         logger.info(f"Saved Xiaoyuzhou episode to: {filepath}")
         
+        # Create and save metadata JSON file (same as other articles)
+        metadata = {
+            "date": date_str,
+            "category": result.category,
+            "author": result.author,
+            "source": scraper.get_source_name(),
+            "title": result.title,
+            "url": url,
+            "original_file": filename,
+            "translated_file": None  # Xiaoyuzhou articles don't have translations
+        }
+        
+        # Save metadata to JSON file (same name as HTML but with .json extension)
+        metadata_filename = filename.replace('.html', '.json')
+        metadata_filepath = os.path.join(output_dir, metadata_filename)
+        with open(metadata_filepath, 'w', encoding='utf-8') as f:
+            json.dump(metadata, f, ensure_ascii=False, indent=2)
+        logger.info(f"Saved metadata to: {metadata_filepath}")
+        
         # For Xiaoyuzhou, only save to output_dir (like WeChat), not to zh_dir
         # Return same path for both en and zh to indicate no separate translation
         return (filepath, None)

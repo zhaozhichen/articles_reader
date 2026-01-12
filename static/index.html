@@ -2070,14 +2070,86 @@
                 }
             } catch (error) {
                 console.error('Error adding article:', error);
-                messageDiv.className = 'add-article-message error';
-                if (error.name === 'AbortError') {
+                messageDiv.className = 'add-article-message info';
+                
+                // For timeout or non-JSON response, check if article was actually added
+                if (error.name === 'AbortError' || error.message.includes('非JSON响应')) {
                     messageDiv.textContent = isXiaoyuzhou 
-                        ? '请求超时。小宇宙播客处理时间较长（需要下载音频、转录、生成总结），可能仍在后台处理中。请稍后刷新页面查看结果。'
-                        : '请求超时，请稍后重试或刷新页面查看结果。';
-                } else if (error.message.includes('非JSON响应')) {
-                    messageDiv.textContent = '服务器返回了错误页面。这可能是由于处理时间过长导致的。对于小宇宙播客，处理可能需要15-30分钟。请稍后刷新页面查看结果，或检查服务器日志。';
+                        ? '请求超时。小宇宙播客处理时间较长，可能仍在后台处理中。正在刷新列表检查是否已成功添加...'
+                        : '请求超时，正在刷新列表检查是否已成功添加...';
+                    
+                    // Wait a moment, then refresh and check
+                    setTimeout(async () => {
+                        try {
+                            // Clear filters and reload to check for new article
+                            document.getElementById('filterCategory').value = '';
+                            document.getElementById('filterAuthor').value = '';
+                            document.getElementById('filterSource').value = '';
+                            document.getElementById('filterDateFrom').value = '';
+                            document.getElementById('filterDateTo').value = '';
+                            currentFilters = {};
+                            updateStarFilterButton();
+                            
+                            await loadFilterOptions();
+                            currentPage = 1;
+                            await loadArticles();
+                            
+                            // Check if we can find the article by checking recent articles
+                            // (we'll check the first few articles to see if URL matches)
+                            const checkResponse = await fetch(`${API_BASE}/api/articles?limit=10&page=1`);
+                            if (checkResponse.ok) {
+                                const checkData = await checkResponse.json();
+                                const foundArticle = checkData.articles && checkData.articles.find(article => 
+                                    article.original_url === url || article.original_url.includes(url.split('/').pop())
+                                );
+                                
+                                if (foundArticle) {
+                                    // Article was successfully added!
+                                    messageDiv.className = 'add-article-message success';
+                                    messageDiv.textContent = '文章已成功添加！';
+                                    
+                                    // Clear input
+                                    urlInput.value = '';
+                                    
+                                    // Scroll to the article
+                                    setTimeout(() => {
+                                        const articleCard = document.getElementById(`article-${foundArticle.id}`);
+                                        if (articleCard) {
+                                            articleCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                            articleCard.classList.add('newly-added');
+                                            setTimeout(() => {
+                                                articleCard.classList.remove('newly-added');
+                                            }, 3000);
+                                        }
+                                    }, 500);
+                                    
+                                    // Hide message after 5 seconds
+                                    setTimeout(() => {
+                                        messageDiv.style.display = 'none';
+                                    }, 5000);
+                                    return;
+                                }
+                            }
+                        } catch (checkError) {
+                            console.error('Error checking article status:', checkError);
+                        }
+                        
+                        // If article not found, show message to refresh
+                        messageDiv.className = 'add-article-message info';
+                        messageDiv.textContent = isXiaoyuzhou 
+                            ? '请求超时。小宇宙播客处理时间较长（需要下载音频、转录、生成总结），可能仍在后台处理中。如果文章已添加，应该会出现在列表中。如果未出现，请稍后再试。'
+                            : '请求超时。如果文章已添加，应该会出现在列表中。如果未出现，请稍后再试。';
+                        
+                        // Clear input
+                        urlInput.value = '';
+                        
+                        // Hide message after 10 seconds
+                        setTimeout(() => {
+                            messageDiv.style.display = 'none';
+                        }, 10000);
+                    }, 2000);
                 } else {
+                    messageDiv.className = 'add-article-message error';
                     messageDiv.textContent = '添加文章时发生错误: ' + error.message;
                 }
             } finally {
