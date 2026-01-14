@@ -4,6 +4,7 @@ import asyncio
 import subprocess
 import sys
 import os
+import uuid
 from typing import List, Optional, Dict, Any
 from datetime import datetime, date
 from fastapi import APIRouter, Depends, Query, HTTPException, status
@@ -35,6 +36,9 @@ _import_queue: asyncio.Queue = asyncio.Queue()
 _import_lock = asyncio.Lock()
 _import_worker_running = False
 
+# Task status storage for async import tasks
+_import_tasks: Dict[str, Dict[str, Any]] = {}
+
 
 async def _process_article_import_task(
     url: str,
@@ -42,11 +46,21 @@ async def _process_article_import_task(
     script_path: Path,
     timeout_seconds: int,
     env: Dict[str, Any],
-    db: Session
+    db: Session,
+    task_id: str
 ) -> Dict[str, Any]:
     """Process a single article import task."""
     try:
+        # Update task status to processing
+        if task_id in _import_tasks:
+            _import_tasks[task_id]["status"] = "processing"
+            _import_tasks[task_id]["message"] = "正在处理文章..."
         logger.info(f"Running command: python {script_path} --url {url}")
+        
+        # Update task status
+        if task_id in _import_tasks:
+            _import_tasks[task_id]["status"] = "processing"
+            _import_tasks[task_id]["message"] = "正在抓取文章内容..."
         
         cmd = [
             sys.executable,
@@ -76,6 +90,9 @@ async def _process_article_import_task(
         if result.returncode != 0:
             error_msg = result.stderr or result.stdout or "Unknown error"
             logger.error(f"Scraping failed: {error_msg}")
+            if task_id in _import_tasks:
+                _import_tasks[task_id]["status"] = "error"
+                _import_tasks[task_id]["error"] = f"Failed to scrape article: {error_msg}"
             raise Exception(f"Failed to scrape article: {error_msg}")
         
         logger.info(f"Scraping completed successfully")
@@ -83,6 +100,9 @@ async def _process_article_import_task(
         
         # Import articles into database
         logger.info("Importing article into database...")
+        if task_id in _import_tasks:
+            _import_tasks[task_id]["status"] = "processing"
+            _import_tasks[task_id]["message"] = "正在导入到数据库..."
         import_count = await asyncio.to_thread(import_articles_from_directory, HTML_DIR_EN)
         logger.info(f"Imported {import_count} articles into database")
         
@@ -106,17 +126,25 @@ async def _process_article_import_task(
                 except:
                     pass
             
-            return {
+            result = {
                 "success": True,
                 "message": "Article added successfully",
                 "article": ArticleResponse.model_validate(new_article)
             }
+            if task_id in _import_tasks:
+                _import_tasks[task_id]["status"] = "completed"
+                _import_tasks[task_id]["result"] = result
+            return result
         else:
-            return {
+            result = {
                 "success": True,
                 "message": "Article processed but not found in database",
                 "import_count": import_count
             }
+            if task_id in _import_tasks:
+                _import_tasks[task_id]["status"] = "completed"
+                _import_tasks[task_id]["result"] = result
+            return result
             
     except subprocess.TimeoutExpired as e:
         try:
@@ -128,6 +156,9 @@ async def _process_article_import_task(
         raise Exception(f"Scraping timed out after {timeout_minutes} minutes. For Xiaoyuzhou episodes, this may take longer due to audio download and transcription.")
     except Exception as e:
         logger.error(f"Error processing article import task: {str(e)}", exc_info=True)
+        if task_id in _import_tasks:
+            _import_tasks[task_id]["status"] = "error"
+            _import_tasks[task_id]["error"] = str(e)
         raise
 
 
@@ -146,23 +177,25 @@ async def _import_worker():
                 logger.info("Import worker received shutdown signal")
                 break
             
-            url, scraper, script_path, timeout_seconds, env, db, future = task
+            url, scraper, script_path, timeout_seconds, env, db, future, task_id = task
             
             logger.info(f"Processing queued import task for URL: {url} (queue size: {_import_queue.qsize()})")
             
             try:
                 result = await _process_article_import_task(
-                    url, scraper, script_path, timeout_seconds, env, db
+                    url, scraper, script_path, timeout_seconds, env, db, task_id
                 )
-                future.set_result(result)
+                if future:
+                    future.set_result(result)
             except Exception as e:
-                future.set_exception(e)
+                if future:
+                    future.set_exception(e)
             finally:
                 _import_queue.task_done()
                 
         except Exception as e:
             logger.error(f"Error in import worker: {str(e)}", exc_info=True)
-            if 'future' in locals():
+            if 'future' in locals() and future:
                 future.set_exception(e)
             _import_queue.task_done()
     
@@ -214,29 +247,113 @@ async def list_articles(
         
         logger.info(f"Received request: search='{search}', lang='{lang}', page={page}, limit={limit}")
         
-        # Apply search filter first (search in the appropriate language field based on lang parameter)
+        # Apply search filter first (search in titles and HTML content)
         if search and search.strip():
             search_term = f"%{search.strip()}%"
-            logger.info(f"Searching for '{search.strip()}' in language '{lang}'")
-            if lang == "zh":
-                # Search only in Chinese title when in Chinese mode
-                query = query.filter(Article.title_zh.isnot(None), Article.title_zh != "")
-                query = query.filter(Article.title_zh.ilike(search_term))
-                logger.info(f"Applied filter: title_zh contains '{search.strip()}'")
-            elif lang == "en":
-                # Search only in English title when in English mode
-                query = query.filter(Article.title.isnot(None), Article.title != "")
-                query = query.filter(Article.title.ilike(search_term))
-                logger.info(f"Applied filter: title contains '{search.strip()}'")
-            else:
-                # If no lang specified, search in both
-                query = query.filter(
-                    or_(
-                        Article.title.ilike(search_term),
-                        Article.title_zh.ilike(search_term)
-                    )
+            search_lower = search.strip().lower()
+            logger.info(f"Searching for '{search.strip()}' in all articles (titles and HTML content)")
+            
+            # First, search in titles (search in both English and Chinese titles, regardless of lang filter)
+            # This ensures we find all articles that match in titles
+            title_query = db.query(Article).filter(
+                or_(
+                    Article.title.ilike(search_term),
+                    Article.title_zh.ilike(search_term)
                 )
-                logger.info(f"Applied filter: title or title_zh contains '{search.strip()}'")
+            )
+            logger.info(f"Searching in both title and title_zh for '{search.strip()}'")
+            
+            # Get articles matching title search
+            title_matched_ids = {article.id for article in title_query.all()}
+            logger.info(f"Found {len(title_matched_ids)} articles matching title search")
+            
+            # Now search in HTML content
+            # Get all articles to search (we'll apply other filters after search)
+            # This ensures we search all articles as requested
+            all_articles = db.query(Article).all()
+            html_matched_ids = set()
+            
+            # Search HTML content
+            def search_html_content(article: Article) -> bool:
+                """Search for keyword in article HTML content."""
+                try:
+                    # Try to read HTML files
+                    html_files = []
+                    
+                    # Try English HTML
+                    if article.html_file_en:
+                        en_path = Path(article.html_file_en)
+                        if en_path.parts[0] == 'en':
+                            filename = en_path.name
+                            file_path = HTML_DIR_EN / filename
+                        else:
+                            file_path = HTML_DIR_EN / en_path.name
+                        if file_path.exists():
+                            html_files.append(file_path)
+                    
+                    # Try Chinese HTML
+                    if article.html_file_zh:
+                        zh_path = Path(article.html_file_zh)
+                        if zh_path.parts[0] == 'zh':
+                            filename = zh_path.name
+                            file_path = HTML_DIR_ZH / filename
+                        else:
+                            file_path = HTML_DIR_ZH / zh_path.name
+                        if file_path.exists():
+                            html_files.append(file_path)
+                    
+                    # Search in HTML files
+                    for html_file in html_files:
+                        try:
+                            with open(html_file, 'r', encoding='utf-8') as f:
+                                html_content = f.read().lower()
+                                if search_lower in html_content:
+                                    return True
+                        except Exception as e:
+                            logger.warning(f"Error reading HTML file {html_file}: {e}")
+                            continue
+                    
+                    return False
+                except Exception as e:
+                    logger.warning(f"Error searching HTML for article {article.id}: {e}")
+                    return False
+            
+            # Search HTML content for all articles (in batches to avoid blocking)
+            from concurrent.futures import ThreadPoolExecutor
+            
+            # Use thread pool to search HTML files in parallel
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                futures = []
+                for article in all_articles:
+                    if article.id not in title_matched_ids:  # Skip if already matched by title
+                        future = executor.submit(search_html_content, article)
+                        futures.append((article.id, future))
+                
+                # Collect results
+                for article_id, future in futures:
+                    try:
+                        if future.result(timeout=5):  # 5 second timeout per file
+                            html_matched_ids.add(article_id)
+                    except Exception as e:
+                        logger.warning(f"Error searching HTML for article {article_id}: {e}")
+            
+            logger.info(f"Found {len(html_matched_ids)} articles matching HTML content search")
+            
+            # Combine title and HTML matches
+            all_matched_ids = title_matched_ids | html_matched_ids
+            logger.info(f"Total {len(all_matched_ids)} articles matching search (title + HTML)")
+            
+            # Filter query to only include matched articles
+            if all_matched_ids:
+                query = query.filter(Article.id.in_(all_matched_ids))
+            else:
+                # No matches found, return empty result
+                query = query.filter(Article.id == None)  # This will return no results
+            
+            # Note: We do NOT apply language filter when searching, because:
+            # 1. User wants to search all articles regardless of language
+            # 2. HTML content may match even if article doesn't have title in preferred language
+            # Language filter is only applied when NOT searching (see elif lang block below)
         elif lang:
             # Apply language filter only if no search (to show all articles in that language)
             if lang == "zh":
@@ -590,7 +707,8 @@ async def add_article_from_url(
     db: Session = Depends(get_db)
 ):
     """
-    Manually add an article by URL.
+    Manually add an article by URL. Returns immediately with a task ID.
+    Use /import-status/{task_id} to check the status.
     
     - **url**: Article URL to scrape and add
     """
@@ -632,72 +750,40 @@ async def add_article_from_url(
         # For Xiaoyuzhou, increase timeout to 30 minutes (audio download + transcription + summary generation can take time)
         timeout_seconds = 1800 if scraper.get_source_slug() == 'xiaoyuzhou' else 600
         
+        # Generate task ID
+        task_id = str(uuid.uuid4())
+        
+        # Initialize task status
+        _import_tasks[task_id] = {
+            "status": "queued",
+            "url": url,
+            "message": "任务已加入队列，等待处理...",
+            "created_at": datetime.now().isoformat()
+        }
+        
         # Ensure worker is running
         _ensure_worker_running()
         
-        # Create a future to wait for the result
+        # Create a future to wait for the result (for backward compatibility, but we won't wait)
         future = asyncio.Future()
         
         # Add task to queue
         queue_size = _import_queue.qsize()
         if queue_size > 0:
             logger.info(f"Article import queued (position in queue: {queue_size + 1})")
+            _import_tasks[task_id]["message"] = f"任务已加入队列（队列位置: {queue_size + 1}）"
         
-        await _import_queue.put((url, scraper, script_path, timeout_seconds, env, db, future))
+        await _import_queue.put((url, scraper, script_path, timeout_seconds, env, db, future, task_id))
         
-        # Wait for the task to complete
-        # Note: We don't add asyncio.wait_for here because:
-        # 1. The subprocess already has its own timeout (timeout_seconds)
-        # 2. Adding another timeout could cause premature cancellation
-        # 3. The frontend AbortController handles client-side timeout
-        try:
-            result = await future
-            # Result already contains the correct format from _process_article_import_task
-            if "article" in result:
-                return {
-                    "message": result.get("message", "Article added successfully"),
-                    "article": result.get("article")
-                }
-            else:
-                return {
-                    "message": result.get("message", "Article processed"),
-                    "import_count": result.get("import_count", 0)
-                }
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Error waiting for import task: {error_msg}", exc_info=True)
-            
-            # Check if it's a timeout error
-            if "timed out" in error_msg.lower():
-                try:
-                    scraper_check = get_scraper_for_url(url)
-                    timeout_minutes = 30 if scraper_check and scraper_check.get_source_slug() == 'xiaoyuzhou' else 10
-                except:
-                    timeout_minutes = 30
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Scraping timed out after {timeout_minutes} minutes. For Xiaoyuzhou episodes, this may take longer due to audio download and transcription."
-                )
-            else:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Error adding article: {error_msg}"
-                )
+        # Return immediately with task ID
+        return {
+            "task_id": task_id,
+            "message": "任务已创建，正在后台处理中...",
+            "status": "queued"
+        }
         
     except HTTPException:
         raise
-    except subprocess.TimeoutExpired as e:
-        # Get scraper again in case it's not in scope
-        try:
-            scraper_check = get_scraper_for_url(url)
-            timeout_minutes = 30 if scraper_check and scraper_check.get_source_slug() == 'xiaoyuzhou' else 10
-        except:
-            timeout_minutes = 30
-        logger.error(f"Scraping script timed out after {timeout_minutes} minutes")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Scraping timed out after {timeout_minutes} minutes. For Xiaoyuzhou episodes, this may take longer due to audio download and transcription."
-        )
     except Exception as e:
         import traceback
         error_trace = traceback.format_exc()
@@ -708,6 +794,44 @@ async def add_article_from_url(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error adding article: {str(e)}"
         )
+
+
+@router.get("/import-status/{task_id}")
+async def get_import_status(
+    task_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Get the status of an article import task.
+    
+    - **task_id**: Task ID returned from /add-from-url
+    """
+    if task_id not in _import_tasks:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Task not found"
+        )
+    
+    task = _import_tasks[task_id]
+    
+    # If task is completed, try to get the article
+    if task["status"] == "completed" and "result" in task:
+        result = task["result"]
+        if "article" in result:
+            # Refresh article from database
+            article_id = result["article"].id
+            article = db.query(Article).filter(Article.id == article_id).first()
+            if article:
+                result["article"] = ArticleResponse.model_validate(article)
+    
+    return {
+        "task_id": task_id,
+        "status": task["status"],
+        "message": task.get("message", ""),
+        "error": task.get("error"),
+        "result": task.get("result"),
+        "created_at": task.get("created_at")
+    }
 
 
 class AskAIRequest(BaseModel):

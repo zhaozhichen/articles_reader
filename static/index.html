@@ -165,10 +165,11 @@
         }
 
         .filters-section {
-            background: #f8f9fa;
+            background: #e8f5e9;
             border-radius: 8px;
             padding: 20px;
             margin-top: 20px;
+            border: 2px solid #4caf50;
         }
 
         .filters-section h3 {
@@ -243,7 +244,7 @@
             border-radius: 8px;
             padding: 20px;
             margin-top: 20px;
-            border: 2px dashed #667eea;
+            border: 2px solid #667eea;
             position: relative;
         }
 
@@ -1088,50 +1089,6 @@
                 </div>
                 <div class="advanced-features-content" id="advancedFeaturesContent">
                     <div class="advanced-features-inner">
-                        <div class="search-section">
-                            <h3>🔍 搜索文章</h3>
-                            <div class="search-form">
-                                <input type="text" id="searchInput" placeholder="输入关键词搜索文章标题..." onkeypress="handleSearchKeyPress(event)" />
-                                <button onclick="performSearch()">搜索</button>
-                                <button class="secondary" onclick="clearSearch()">清除</button>
-                            </div>
-                        </div>
-
-                        <div class="filters-section">
-                            <h3>🔍 过滤器</h3>
-                            <div class="filters-grid">
-                                <div class="filter-group">
-                                    <label>类别</label>
-                                    <select id="filterCategory" onchange="applyFilters()">
-                                        <option value="">全部</option>
-                                    </select>
-                                </div>
-                                <div class="filter-group">
-                                    <label>作者</label>
-                                    <select id="filterAuthor" onchange="applyFilters()">
-                                        <option value="">全部</option>
-                                    </select>
-                                </div>
-                                <div class="filter-group">
-                                    <label>出处</label>
-                                    <select id="filterSource" onchange="applyFilters()">
-                                        <option value="">全部</option>
-                                    </select>
-                                </div>
-                                <div class="filter-group">
-                                    <label>开始日期</label>
-                                    <input type="date" id="filterDateFrom" onchange="applyFilters()">
-                                </div>
-                                <div class="filter-group">
-                                    <label>结束日期</label>
-                                    <input type="date" id="filterDateTo" onchange="applyFilters()">
-                                </div>
-                            </div>
-                            <div class="filter-actions">
-                                <button class="secondary" onclick="resetFilters()">重置过滤器</button>
-                            </div>
-                        </div>
-
                         <div class="add-article-section">
                             <h3>
                                 ➕ 手动添加文章
@@ -1158,6 +1115,50 @@
                                 <p style="margin: 0 0 10px 0; font-size: 13px; color: #666;">如果直接上传HTML文件到目录，请点击下方按钮导入：</p>
                                 <button id="importArticlesBtn" onclick="importArticles()" style="padding: 8px 16px; background: #28a745; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600;">📥 导入文章</button>
                                 <div id="importMessage" class="add-article-message" style="margin-top: 10px;"></div>
+                            </div>
+                        </div>
+
+                        <div class="search-section">
+                            <h3>🔍 搜索文章</h3>
+                            <div class="search-form">
+                                <input type="text" id="searchInput" placeholder="输入关键词搜索文章标题..." onkeypress="handleSearchKeyPress(event)" />
+                                <button onclick="performSearch()">搜索</button>
+                                <button class="secondary" onclick="clearSearch()">清除</button>
+                            </div>
+                        </div>
+
+                        <div class="filters-section">
+                            <h3>🔍 过滤器</h3>
+                            <div class="filters-grid">
+                                <div class="filter-group">
+                                    <label>出处</label>
+                                    <select id="filterSource" onchange="applyFilters()">
+                                        <option value="">全部</option>
+                                    </select>
+                                </div>
+                                <div class="filter-group">
+                                    <label>类别</label>
+                                    <select id="filterCategory" onchange="applyFilters()">
+                                        <option value="">全部</option>
+                                    </select>
+                                </div>
+                                <div class="filter-group">
+                                    <label>作者</label>
+                                    <select id="filterAuthor" onchange="applyFilters()">
+                                        <option value="">全部</option>
+                                    </select>
+                                </div>
+                                <div class="filter-group">
+                                    <label>开始日期</label>
+                                    <input type="date" id="filterDateFrom" onchange="applyFilters()">
+                                </div>
+                                <div class="filter-group">
+                                    <label>结束日期</label>
+                                    <input type="date" id="filterDateTo" onchange="applyFilters()">
+                                </div>
+                            </div>
+                            <div class="filter-actions">
+                                <button class="secondary" onclick="resetFilters()">重置过滤器</button>
                             </div>
                         </div>
 
@@ -2096,220 +2097,193 @@
             messageDiv.className = 'add-article-message info';
             messageDiv.style.display = 'block';
             
-            // Check if it's a Xiaoyuzhou URL for longer timeout
+            // Check if it's a Xiaoyuzhou URL
             const isXiaoyuzhou = url.includes('xiaoyuzhou');
-            const timeoutMs = isXiaoyuzhou ? 1800000 : 600000; // 30 minutes for Xiaoyuzhou, 10 minutes for others
-            messageDiv.textContent = isXiaoyuzhou 
-                ? '正在处理小宇宙播客（下载音频、转录、生成总结），这可能需要5-10分钟，请耐心等待...'
-                : '正在抓取文章并翻译，这可能需要几分钟...';
+            messageDiv.textContent = '正在创建任务...';
 
             try {
-                // Create AbortController for timeout
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-                
+                // Submit task and get task_id immediately
                 const response = await fetch(`${API_BASE}/api/articles/add-from-url`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ url: url }),
-                    signal: controller.signal
+                    body: JSON.stringify({ url: url })
                 });
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({ detail: '请求失败' }));
+                    throw new Error(errorData.detail || '请求失败');
+                }
+
+                const data = await response.json();
                 
-                clearTimeout(timeoutId);
-
-                // Check if response is JSON before parsing
-                const contentType = response.headers.get('content-type');
-                let data;
-                if (contentType && contentType.includes('application/json')) {
-                    data = await response.json();
-                } else {
-                    // If not JSON, read as text to get error message
-                    const text = await response.text();
-                    throw new Error(`服务器返回了非JSON响应: ${text.substring(0, 200)}`);
-                }
-
-                if (response.ok) {
-                    console.log('Article added successfully, response.ok:', response.ok);
-                    console.log('Article data:', data);
-                    
-                    messageDiv.className = 'add-article-message success';
-                    messageDiv.textContent = '文章添加成功！正在刷新列表...';
-                    messageDiv.style.display = 'block';
-                    
-                    // Clear input
-                    urlInput.value = '';
-                    
-                    // Get the new article ID if available
-                    const newArticleId = data.article ? data.article.id : null;
-                    console.log('New article ID:', newArticleId);
-                    
-                    // Clear filters to ensure new article is visible
-                    // (new article might not match current filters)
-                    document.getElementById('filterCategory').value = '';
-                    document.getElementById('filterAuthor').value = '';
-                    document.getElementById('filterSource').value = '';
-                    document.getElementById('filterDateFrom').value = '';
-                    document.getElementById('filterDateTo').value = '';
-                    currentFilters = {};
-                    updateStarFilterButton();
-                    
-                    // Try to reload filter options and articles list
-                    // If this fails, we still show success message since article was added
-                    try {
-                        console.log('Starting to refresh article list...');
-                        // Reload filter options
-                        await loadFilterOptions();
-                        console.log('Filter options loaded');
-                        
-                        // Reset to first page to show new article (it should be at the top)
-                        currentPage = 1;
-                        await loadArticles(newArticleId);
-                        console.log('Articles list loaded');
-                        
-                        // Scroll to the new article if it exists
-                        if (newArticleId) {
-                            setTimeout(() => {
-                                const newArticleCard = document.getElementById(`article-${newArticleId}`);
-                                if (newArticleCard) {
-                                    newArticleCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                                }
-                            }, 500);
-                        }
-                        
-                        // Update success message
-                        messageDiv.textContent = '文章添加成功！';
-                        messageDiv.className = 'add-article-message success';
-                        console.log('Article list refresh completed successfully');
-                    } catch (refreshError) {
-                        console.error('Error refreshing article list:', refreshError);
-                        console.error('Error details:', {
-                            name: refreshError.name,
-                            message: refreshError.message,
-                            stack: refreshError.stack
-                        });
-                        // Article was added successfully, but refreshing list failed
-                        // Show a warning but keep success message
-                        const errorMsg = refreshError.message || '未知错误';
-                        messageDiv.textContent = `文章添加成功！但刷新列表时出现问题: ${errorMsg}。请手动刷新页面查看。`;
-                        messageDiv.className = 'add-article-message info';
-                        messageDiv.style.display = 'block';
-                        console.log('Error message displayed:', messageDiv.textContent);
+                if (!data.task_id) {
+                    // Fallback: if no task_id, assume old API format
+                    if (data.article) {
+                        // Old format - article already added
+                        await handleArticleAdded(data.article.id, urlInput, messageDiv);
+                        return;
+                    } else {
+                        throw new Error('服务器响应格式错误');
                     }
-                    
-                    // Hide message after 5 seconds
-                    setTimeout(() => {
-                        messageDiv.style.display = 'none';
-                        // Remove highlight class after animation
-                        if (newArticleId) {
-                            const newArticleCard = document.getElementById(`article-${newArticleId}`);
-                            if (newArticleCard) {
-                                setTimeout(() => {
-                                    newArticleCard.classList.remove('newly-added');
-                                }, 2000);
-                            }
-                        }
-                    }, 5000);
-                } else {
-                    messageDiv.className = 'add-article-message error';
-                    messageDiv.textContent = data.detail || '添加文章失败';
                 }
+
+                const taskId = data.task_id;
+                console.log('Task created:', taskId);
+                
+                // Start polling for task status
+                messageDiv.textContent = isXiaoyuzhou 
+                    ? '任务已创建，正在处理小宇宙播客（下载音频、转录、生成总结），这可能需要5-10分钟...'
+                    : '任务已创建，正在处理中...';
+                
+                // Poll for status
+                await pollTaskStatus(taskId, url, urlInput, messageDiv, isXiaoyuzhou);
             } catch (error) {
                 console.error('Error adding article:', error);
-                messageDiv.className = 'add-article-message info';
-                
-                // For timeout or non-JSON response, check if article was actually added
-                if (error.name === 'AbortError' || error.message.includes('非JSON响应')) {
-                    messageDiv.textContent = isXiaoyuzhou 
-                        ? '请求超时。小宇宙播客处理时间较长，可能仍在后台处理中。正在刷新列表检查是否已成功添加...'
-                        : '请求超时，正在刷新列表检查是否已成功添加...';
-                    
-                    // Wait a moment, then refresh and check
-                    setTimeout(async () => {
-                        try {
-                            // Clear filters and reload to check for new article
-                            document.getElementById('filterCategory').value = '';
-                            document.getElementById('filterAuthor').value = '';
-                            document.getElementById('filterSource').value = '';
-                            document.getElementById('filterDateFrom').value = '';
-                            document.getElementById('filterDateTo').value = '';
-                            currentFilters = {};
-                            updateStarFilterButton();
-                            
-                            await loadFilterOptions();
-                            currentPage = 1;
-                            await loadArticles();
-                            
-                            // Check if we can find the article by checking recent articles
-                            // (we'll check the first few articles to see if URL matches)
-                            const checkResponse = await fetch(`${API_BASE}/api/articles?limit=10&page=1`);
-                            if (checkResponse.ok) {
-                                const checkData = await checkResponse.json();
-                                const foundArticle = checkData.articles && checkData.articles.find(article => 
-                                    article.original_url === url || article.original_url.includes(url.split('/').pop())
-                                );
-                                
-                                if (foundArticle) {
-                                    // Article was successfully added!
-                                    messageDiv.className = 'add-article-message success';
-                                    messageDiv.textContent = '文章已成功添加！';
-                                    
-                                    // Clear input
-                                    urlInput.value = '';
-                                    
-                                    // Scroll to the article
-                                    setTimeout(() => {
-                                        const articleCard = document.getElementById(`article-${foundArticle.id}`);
-                                        if (articleCard) {
-                                            articleCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                                            articleCard.classList.add('newly-added');
-                                            setTimeout(() => {
-                                                articleCard.classList.remove('newly-added');
-                                            }, 3000);
-                                        }
-                                    }, 500);
-                                    
-                                    // Hide message after 5 seconds
-                                    setTimeout(() => {
-                                        messageDiv.style.display = 'none';
-                                    }, 5000);
-                                    return;
-                                }
-                            }
-                        } catch (checkError) {
-                            console.error('Error checking article status:', checkError);
-                        }
-                        
-                        // If article not found, show message to refresh
-                        messageDiv.className = 'add-article-message info';
-                        messageDiv.textContent = isXiaoyuzhou 
-                            ? '请求超时。小宇宙播客处理时间较长（需要下载音频、转录、生成总结），可能仍在后台处理中。如果文章已添加，应该会出现在列表中。如果未出现，请稍后再试。'
-                            : '请求超时。如果文章已添加，应该会出现在列表中。如果未出现，请稍后再试。';
-                        
-                        // Clear input
-                        urlInput.value = '';
-                        
-                        // Hide message after 10 seconds
-                        setTimeout(() => {
-                            messageDiv.style.display = 'none';
-                        }, 10000);
-                    }, 2000);
-                } else {
-                    console.error('Error adding article (not timeout/non-JSON):', error);
-                    console.error('Error details:', {
-                        name: error.name,
-                        message: error.message,
-                        stack: error.stack
-                    });
-                    messageDiv.className = 'add-article-message error';
-                    messageDiv.textContent = '添加文章时发生错误: ' + (error.message || '未知错误');
-                    messageDiv.style.display = 'block';
-                }
+                messageDiv.className = 'add-article-message error';
+                messageDiv.textContent = error.message || '添加文章失败';
             } finally {
                 addBtn.disabled = false;
                 addBtn.textContent = '添加文章';
             }
+        }
+
+        async function pollTaskStatus(taskId, url, urlInput, messageDiv, isXiaoyuzhou) {
+            const maxPollTime = isXiaoyuzhou ? 1800000 : 600000; // 30 minutes for Xiaoyuzhou, 10 minutes for others
+            const pollInterval = 3000; // Poll every 3 seconds
+            const startTime = Date.now();
+            let pollCount = 0;
+            
+            const poll = async () => {
+                try {
+                    // Create AbortController for this poll request with a 30 second timeout
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout per request
+                    
+                    try {
+                        const response = await fetch(`${API_BASE}/api/articles/import-status/${taskId}`, {
+                            signal: controller.signal
+                        });
+                        
+                        clearTimeout(timeoutId);
+                        
+                        if (!response.ok) {
+                            throw new Error(`无法获取任务状态: HTTP ${response.status}`);
+                        }
+                        
+                        const status = await response.json();
+                        pollCount++;
+                        
+                        // Update message with current status
+                        if (status.message) {
+                            messageDiv.textContent = status.message;
+                        }
+                        
+                        if (status.status === 'completed') {
+                            // Task completed successfully
+                            messageDiv.className = 'add-article-message success';
+                            messageDiv.textContent = '文章添加成功！正在刷新列表...';
+                            
+                            const articleId = status.result?.article?.id || null;
+                            await handleArticleAdded(articleId, urlInput, messageDiv);
+                            return;
+                        } else if (status.status === 'error') {
+                            // Task failed
+                            messageDiv.className = 'add-article-message error';
+                            messageDiv.textContent = status.error || '处理失败';
+                            return;
+                        } else if (status.status === 'queued' || status.status === 'processing') {
+                            // Still processing, continue polling
+                            const elapsed = Date.now() - startTime;
+                            if (elapsed >= maxPollTime) {
+                                messageDiv.className = 'add-article-message info';
+                                messageDiv.textContent = isXiaoyuzhou 
+                                    ? '处理时间较长，可能仍在后台处理中。请稍后刷新页面查看。'
+                                    : '处理时间较长，可能仍在后台处理中。请稍后刷新页面查看。';
+                                return;
+                            }
+                            
+                            // Continue polling
+                            setTimeout(poll, pollInterval);
+                        }
+                    } catch (fetchError) {
+                        clearTimeout(timeoutId);
+                        throw fetchError;
+                    }
+                } catch (error) {
+                    console.error('Error polling task status:', error);
+                    const elapsed = Date.now() - startTime;
+                    
+                    // If it's a timeout or network error, and we haven't exceeded max poll time, retry
+                    if ((error.name === 'AbortError' || error.message.includes('timeout') || error.message.includes('network')) && elapsed < maxPollTime) {
+                        console.log(`Poll request failed (${error.name}), retrying in ${pollInterval}ms...`);
+                        // Retry polling after a short delay
+                        setTimeout(poll, pollInterval);
+                        return;
+                    }
+                    
+                    // If we've exceeded max poll time, stop polling
+                    if (elapsed >= maxPollTime) {
+                        messageDiv.className = 'add-article-message info';
+                        messageDiv.textContent = '无法获取任务状态。请稍后刷新页面查看是否已成功添加。';
+                        return;
+                    }
+                    
+                    // For other errors, retry after a short delay
+                    setTimeout(poll, pollInterval);
+                }
+            };
+            
+            // Start polling
+            poll();
+        }
+
+        async function handleArticleAdded(articleId, urlInput, messageDiv) {
+            // Clear input
+            urlInput.value = '';
+            
+            // Clear filters to ensure new article is visible
+            document.getElementById('filterCategory').value = '';
+            document.getElementById('filterAuthor').value = '';
+            document.getElementById('filterSource').value = '';
+            document.getElementById('filterDateFrom').value = '';
+            document.getElementById('filterDateTo').value = '';
+            currentFilters = {};
+            updateStarFilterButton();
+            
+            // Try to reload filter options and articles list
+            try {
+                await loadFilterOptions();
+                currentPage = 1;
+                await loadArticles(articleId);
+                
+                // Scroll to the new article if it exists
+                if (articleId) {
+                    setTimeout(() => {
+                        const newArticleCard = document.getElementById(`article-${articleId}`);
+                        if (newArticleCard) {
+                            newArticleCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            newArticleCard.classList.add('newly-added');
+                            setTimeout(() => {
+                                newArticleCard.classList.remove('newly-added');
+                            }, 2000);
+                        }
+                    }, 500);
+                }
+                
+                messageDiv.textContent = '文章添加成功！';
+                messageDiv.className = 'add-article-message success';
+            } catch (refreshError) {
+                console.error('Error refreshing article list:', refreshError);
+                messageDiv.textContent = '文章添加成功！但刷新列表时出现问题。请手动刷新页面查看。';
+                messageDiv.className = 'add-article-message info';
+            }
+            
+            // Hide message after 5 seconds
+            setTimeout(() => {
+                messageDiv.style.display = 'none';
+            }, 5000);
         }
 
         // Allow Enter key to submit
