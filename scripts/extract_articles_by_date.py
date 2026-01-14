@@ -426,8 +426,9 @@ def save_xiaoyuzhou_episode(url, result, scraper, date_str, output_dir, zh_dir, 
         return ''.join(formatted_parts)
     
     title_escaped = html.escape(result.title)
-    author_escaped = html.escape(result.author)
-    category_escaped = html.escape(result.category)
+    # For Xiaoyuzhou: author is the podcast show name (result.category), category is "播客"
+    author_escaped = html.escape(result.category)  # Podcast show name (e.g., "商业就是这样")
+    category_escaped = html.escape("播客")  # Unified category
     url_escaped = html.escape(url)
     shownotes_formatted = format_shownotes(shownotes_text)
     
@@ -568,12 +569,13 @@ def save_xiaoyuzhou_episode(url, result, scraper, date_str, output_dir, zh_dir, 
 </html>"""
     
     # Sanitize components for filename
-    category_safe = sanitize_filename(result.category)
-    author_safe = sanitize_filename(result.author)
+    # For Xiaoyuzhou: author is the podcast show name (result.category), category is "播客"
+    podcast_name_safe = sanitize_filename(result.category)  # Podcast show name (e.g., "商业就是这样")
+    category_safe = sanitize_filename("播客")  # Unified category
     title_safe = sanitize_filename(result.title)
     
-    # Build filename
-    filename = f"{date_str}_xiaoyuzhou_{category_safe}_{author_safe}_{title_safe}.html"
+    # Build filename: use podcast name as author field in filename
+    filename = f"{date_str}_xiaoyuzhou_{category_safe}_{podcast_name_safe}_{title_safe}.html"
     filepath = os.path.join(output_dir, filename)
     
     # Save HTML (only save to output_dir, like WeChat articles - no translation needed)
@@ -583,10 +585,11 @@ def save_xiaoyuzhou_episode(url, result, scraper, date_str, output_dir, zh_dir, 
         logger.info(f"Saved Xiaoyuzhou episode to: {filepath}")
         
         # Create and save metadata JSON file (same as other articles)
+        # For Xiaoyuzhou: author should be the podcast show name (category), category should be "播客"
         metadata = {
             "date": date_str,
-            "category": result.category,
-            "author": result.author,
+            "category": "播客",  # Unified category for all Xiaoyuzhou podcasts
+            "author": result.category,  # Podcast show name (e.g., "商业就是这样")
             "source": scraper.get_source_name(),
             "title": result.title,
             "url": url,
@@ -1163,10 +1166,17 @@ def main():
                 continue
             
             # Extract metadata to determine filename
-            author = result.author
             title = result.title
-            category = result.category
             source_slug = scraper.get_source_slug()
+            
+            # For Xiaoyuzhou: author is the podcast show name (result.category), category is "播客"
+            if source_slug == 'xiaoyuzhou':
+                podcast_name = result.category  # Podcast show name (e.g., "商业就是这样")
+                category = "播客"  # Unified category
+                author = podcast_name  # Use podcast name as author
+            else:
+                author = result.author
+                category = result.category
             
             # Build expected filename
             category_safe = sanitize_filename(category)

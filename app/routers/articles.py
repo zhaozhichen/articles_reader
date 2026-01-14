@@ -4,7 +4,7 @@ import asyncio
 import subprocess
 import sys
 import os
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime, date
 from fastapi import APIRouter, Depends, Query, HTTPException, status
 from fastapi.responses import FileResponse
@@ -29,6 +29,154 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/articles", tags=["articles"])
+
+# Queue for article import tasks to ensure only one import runs at a time
+_import_queue: asyncio.Queue = asyncio.Queue()
+_import_lock = asyncio.Lock()
+_import_worker_running = False
+
+
+async def _process_article_import_task(
+    url: str,
+    scraper,
+    script_path: Path,
+    timeout_seconds: int,
+    env: Dict[str, Any],
+    db: Session
+) -> Dict[str, Any]:
+    """Process a single article import task."""
+    try:
+        logger.info(f"Running command: python {script_path} --url {url}")
+        
+        cmd = [
+            sys.executable,
+            str(script_path),
+            "--url",
+            url,
+            "--output-dir",
+            str(HTML_DIR_EN),
+            "--zh-dir",
+            str(HTML_DIR_ZH)
+        ]
+        
+        # For WeChat and Xiaoyuzhou articles, do not translate
+        if scraper.get_source_slug() not in ['wechat', 'xiaoyuzhou']:
+            cmd.append("--translate")
+        
+        result = await asyncio.to_thread(
+            subprocess.run,
+            cmd,
+            cwd=str(BASE_DIR),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds
+        )
+        
+        if result.returncode != 0:
+            error_msg = result.stderr or result.stdout or "Unknown error"
+            logger.error(f"Scraping failed: {error_msg}")
+            raise Exception(f"Failed to scrape article: {error_msg}")
+        
+        logger.info(f"Scraping completed successfully")
+        logger.info(f"Script output: {result.stdout}")
+        
+        # Import articles into database
+        logger.info("Importing article into database...")
+        import_count = await asyncio.to_thread(import_articles_from_directory, HTML_DIR_EN)
+        logger.info(f"Imported {import_count} articles into database")
+        
+        # Get the newly imported article
+        new_article = db.query(Article).filter(Article.original_url == url).first()
+        if not new_article:
+            # Try to find by checking recent imports
+            new_article = db.query(Article).order_by(Article.created_at.desc()).first()
+        
+        if new_article:
+            # Mark manually uploaded articles as starred by default
+            try:
+                if not new_article.starred:
+                    new_article.starred = True
+                    db.commit()
+                    logger.info(f"Marked manually uploaded article as starred: {new_article.id}")
+            except Exception as e:
+                logger.warning(f"Failed to mark article as starred: {e}", exc_info=True)
+                try:
+                    db.rollback()
+                except:
+                    pass
+            
+            return {
+                "success": True,
+                "message": "Article added successfully",
+                "article": ArticleResponse.model_validate(new_article)
+            }
+        else:
+            return {
+                "success": True,
+                "message": "Article processed but not found in database",
+                "import_count": import_count
+            }
+            
+    except subprocess.TimeoutExpired as e:
+        try:
+            scraper_check = get_scraper_for_url(url)
+            timeout_minutes = 30 if scraper_check and scraper_check.get_source_slug() == 'xiaoyuzhou' else 10
+        except:
+            timeout_minutes = 30
+        logger.error(f"Scraping script timed out after {timeout_minutes} minutes")
+        raise Exception(f"Scraping timed out after {timeout_minutes} minutes. For Xiaoyuzhou episodes, this may take longer due to audio download and transcription.")
+    except Exception as e:
+        logger.error(f"Error processing article import task: {str(e)}", exc_info=True)
+        raise
+
+
+async def _import_worker():
+    """Worker function that processes import tasks from the queue."""
+    global _import_worker_running
+    _import_worker_running = True
+    logger.info("Import worker started")
+    
+    while True:
+        try:
+            # Get task from queue (wait indefinitely)
+            task = await _import_queue.get()
+            
+            if task is None:  # Shutdown signal
+                logger.info("Import worker received shutdown signal")
+                break
+            
+            url, scraper, script_path, timeout_seconds, env, db, future = task
+            
+            logger.info(f"Processing queued import task for URL: {url} (queue size: {_import_queue.qsize()})")
+            
+            try:
+                result = await _process_article_import_task(
+                    url, scraper, script_path, timeout_seconds, env, db
+                )
+                future.set_result(result)
+            except Exception as e:
+                future.set_exception(e)
+            finally:
+                _import_queue.task_done()
+                
+        except Exception as e:
+            logger.error(f"Error in import worker: {str(e)}", exc_info=True)
+            if 'future' in locals():
+                future.set_exception(e)
+            _import_queue.task_done()
+    
+    _import_worker_running = False
+    logger.info("Import worker stopped")
+
+
+def _ensure_worker_running():
+    """Ensure the import worker is running."""
+    global _import_worker_running
+    if not _import_worker_running:
+        # In FastAPI, we're always in an async context, so create_task is safe
+        asyncio.create_task(_import_worker())
+
 
 @router.get("", response_model=ArticleListResponse)
 async def list_articles(
@@ -465,7 +613,7 @@ async def add_article_from_url(
                 detail="Article with this URL already exists"
             )
         
-        logger.info(f"Processing article from URL: {url} (source: {scraper.get_source_name()})")
+        logger.info(f"Queuing article import from URL: {url} (source: {scraper.get_source_name()})")
         
         # Path to the scraping script
         script_path = BASE_DIR / "scripts" / "extract_articles_by_date.py"
@@ -476,89 +624,65 @@ async def add_article_from_url(
                 detail="Scraping script not found"
             )
         
-        # Run the script with URL parameter
-        cmd = [
-            sys.executable,
-            str(script_path),
-            "--url",
-            url,
-            "--output-dir",
-            str(HTML_DIR_EN),
-            "--zh-dir",
-            str(HTML_DIR_ZH)
-        ]
-        
-        # For WeChat and Xiaoyuzhou articles, do not translate
-        if scraper.get_source_slug() not in ['wechat', 'xiaoyuzhou']:
-            cmd.append("--translate")
-        
         # Prepare environment variables
         env = os.environ.copy()
         if GEMINI_API_KEY:
             env["GEMINI_API_KEY"] = GEMINI_API_KEY
         
-        logger.info(f"Running command: {' '.join(cmd)}")
-        
-        # Run the script in a thread pool to avoid blocking
         # For Xiaoyuzhou, increase timeout to 30 minutes (audio download + transcription + summary generation can take time)
         timeout_seconds = 1800 if scraper.get_source_slug() == 'xiaoyuzhou' else 600
         
-        result = await asyncio.to_thread(
-            subprocess.run,
-            cmd,
-            cwd=str(BASE_DIR),
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds
-        )
+        # Ensure worker is running
+        _ensure_worker_running()
         
-        if result.returncode != 0:
-            error_msg = result.stderr or result.stdout or "Unknown error"
-            logger.error(f"Scraping failed: {error_msg}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to scrape article: {error_msg}"
-            )
+        # Create a future to wait for the result
+        future = asyncio.Future()
         
-        logger.info(f"Scraping completed successfully")
-        logger.info(f"Script output: {result.stdout}")
+        # Add task to queue
+        queue_size = _import_queue.qsize()
+        if queue_size > 0:
+            logger.info(f"Article import queued (position in queue: {queue_size + 1})")
         
-        # Import articles into database
-        logger.info("Importing article into database...")
-        import_count = await asyncio.to_thread(import_articles_from_directory, HTML_DIR_EN)
-        logger.info(f"Imported {import_count} articles into database")
+        await _import_queue.put((url, scraper, script_path, timeout_seconds, env, db, future))
         
-        # Get the newly imported article
-        new_article = db.query(Article).filter(Article.original_url == url).first()
-        if not new_article:
-            # Try to find by checking recent imports
-            new_article = db.query(Article).order_by(Article.created_at.desc()).first()
-        
-        if new_article:
-            # Mark manually uploaded articles as starred by default
-            try:
-                if not new_article.starred:
-                    new_article.starred = True
-                    db.commit()
-                    logger.info(f"Marked manually uploaded article as starred: {new_article.id}")
-            except Exception as e:
-                logger.warning(f"Failed to mark article as starred: {e}", exc_info=True)
-                # Don't fail the whole request if starring fails
-                try:
-                    db.rollback()
-                except:
-                    pass
+        # Wait for the task to complete
+        # Note: We don't add asyncio.wait_for here because:
+        # 1. The subprocess already has its own timeout (timeout_seconds)
+        # 2. Adding another timeout could cause premature cancellation
+        # 3. The frontend AbortController handles client-side timeout
+        try:
+            result = await future
+            # Result already contains the correct format from _process_article_import_task
+            if "article" in result:
+                return {
+                    "message": result.get("message", "Article added successfully"),
+                    "article": result.get("article")
+                }
+            else:
+                return {
+                    "message": result.get("message", "Article processed"),
+                    "import_count": result.get("import_count", 0)
+                }
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"Error waiting for import task: {error_msg}", exc_info=True)
             
-            return {
-                "message": "Article added successfully",
-                "article": ArticleResponse.model_validate(new_article)
-            }
-        else:
-            return {
-                "message": "Article processed but not found in database",
-                "import_count": import_count
-            }
+            # Check if it's a timeout error
+            if "timed out" in error_msg.lower():
+                try:
+                    scraper_check = get_scraper_for_url(url)
+                    timeout_minutes = 30 if scraper_check and scraper_check.get_source_slug() == 'xiaoyuzhou' else 10
+                except:
+                    timeout_minutes = 30
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Scraping timed out after {timeout_minutes} minutes. For Xiaoyuzhou episodes, this may take longer due to audio download and transcription."
+                )
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Error adding article: {error_msg}"
+                )
         
     except HTTPException:
         raise
@@ -683,7 +807,6 @@ async def ask_ai_about_article(
 请基于文章内容提供准确、详细的回答。如果文章内容中没有相关信息，请明确说明。"""
         
         # Generate response
-        logger.info(f"Asking AI about article {article_id}: {request.question[:50]}...")
         response = model.generate_content(prompt)
         
         answer = response.text if hasattr(response, 'text') else str(response)

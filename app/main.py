@@ -142,5 +142,12 @@ async def health():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host=HOST, port=PORT)
+    # Increase timeout settings for long-running requests (e.g., Xiaoyuzhou imports)
+    uvicorn.run(
+        app, 
+        host=HOST, 
+        port=PORT,
+        timeout_keep_alive=300,  # 5 minutes keep-alive timeout
+        timeout_graceful_shutdown=30
+    )
 
