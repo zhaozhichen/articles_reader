@@ -30,6 +30,7 @@ def download_xiaoyuzhou_audio(episode_url: str, output_dir: Path) -> tuple[Optio
     """
     try:
         logger.info(f"Fetching episode page: {episode_url}")
+        logger.info("This may take a moment...")
         headers = {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -37,6 +38,7 @@ def download_xiaoyuzhou_audio(episode_url: str, output_dir: Path) -> tuple[Optio
         
         response = requests.get(episode_url, headers=headers, timeout=30)
         response.raise_for_status()
+        logger.info("✓ Episode page fetched successfully")
         
         soup = BeautifulSoup(response.text, 'html.parser')
         
@@ -109,10 +111,11 @@ def download_xiaoyuzhou_audio(episode_url: str, output_dir: Path) -> tuple[Optio
                 audio_url = audio_elements[0].get('data-audio')
         
         if not audio_url:
-            logger.error("Could not find audio URL in episode page")
+            logger.error("✗ Could not find audio URL in episode page")
+            logger.error("Please check if the episode page structure has changed")
             return None, None
         
-        logger.info(f"Found audio URL: {audio_url}")
+        logger.info(f"✓ Found audio URL: {audio_url}")
         
         # Download the audio file
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -145,15 +148,28 @@ def download_xiaoyuzhou_audio(episode_url: str, output_dir: Path) -> tuple[Optio
         audio_path = output_dir / filename
         
         logger.info(f"Downloading audio to: {audio_path}")
+        logger.info("This may take several minutes for large audio files...")
+        logger.info("Progress: [", end="", flush=True)
+        start_time = time.time()
         audio_response = requests.get(audio_url, headers=headers, timeout=300, stream=True)
         audio_response.raise_for_status()
         
+        total_size = 0
+        chunk_count = 0
         with open(audio_path, 'wb') as f:
             for chunk in audio_response.iter_content(chunk_size=8192):
-                f.write(chunk)
+                if chunk:
+                    f.write(chunk)
+                    total_size += len(chunk)
+                    chunk_count += 1
+                    # Print progress every 100 chunks (~800KB)
+                    if chunk_count % 100 == 0:
+                        logger.info(".", end="", flush=True)
         
+        logger.info("]")  # End progress line
+        elapsed_time = time.time() - start_time
         file_size_mb = audio_path.stat().st_size / (1024 * 1024)
-        logger.info(f"Audio downloaded successfully: {file_size_mb:.1f}MB")
+        logger.info(f"✓ Audio downloaded successfully: {file_size_mb:.1f}MB (took {elapsed_time:.1f}s)")
         
         return audio_path, episode_id
         
@@ -186,23 +202,29 @@ def transcribe_audio_with_gemini(audio_file: Path, transcript_file: Optional[Pat
         genai.configure(api_key=api_key)
         
         logger.info(f"Uploading audio file: {audio_file.name}")
+        logger.info("File size: {:.1f}MB".format(audio_file.stat().st_size / (1024 * 1024)))
+        logger.info("Uploading to Gemini... (this may take a moment)")
         uploaded_file = genai.upload_file(
             path=str(audio_file),
             display_name=audio_file.name
         )
-        logger.info(f"File uploaded: {uploaded_file.name}")
+        logger.info(f"✓ File uploaded: {uploaded_file.name}")
         
         # Wait for file processing
+        logger.info("Waiting for Gemini to process the audio file...")
         max_wait = 300  # 5 minutes
         wait_time = 0
         while uploaded_file.state.name == "PROCESSING":
             if wait_time >= max_wait:
-                logger.warning("File processing timeout")
+                logger.warning("✗ File processing timeout after 5 minutes")
                 break
-            logger.info(f"Processing... ({wait_time}秒)")
+            logger.info(f"  Processing... ({wait_time}s / {max_wait}s)")
             time.sleep(10)
             wait_time += 10
             uploaded_file = genai.get_file(uploaded_file.name)
+        
+        if uploaded_file.state.name == "ACTIVE":
+            logger.info("✓ File processing completed")
         
         if uploaded_file.state.name == "FAILED":
             logger.error("File processing failed")
@@ -252,10 +274,13 @@ def transcribe_audio_with_gemini(audio_file: Path, transcript_file: Optional[Pat
    [主播]：那你觉得...
 """
         
-        logger.info("Sending transcription request...")
+        logger.info("Sending transcription request to Gemini...")
+        logger.info("This may take several minutes depending on audio length...")
+        logger.info("Please wait...")
         response = model.generate_content([uploaded_file, prompt])
         
         transcription = response.text
+        logger.info("✓ Transcription completed")
         
         # Save transcript to file if transcript_file is provided
         if transcript_file and transcription:

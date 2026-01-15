@@ -285,7 +285,10 @@ class XiaoyuzhouScraper(BaseScraper):
         Returns:
             Tuple of (original_filepath, translated_filepath) where translated_filepath is None
         """
+        logger.info("=" * 80)
         logger.info("Processing Xiaoyuzhou episode...")
+        logger.info(f"URL: {url}")
+        logger.info("=" * 80)
         
         # Extract shownotes from body
         shownotes_html = result.body_html or ""
@@ -319,7 +322,11 @@ class XiaoyuzhouScraper(BaseScraper):
         # Download audio and transcribe if transcript doesn't exist
         audio_file = None
         if not transcript:
-            logger.info("Downloading audio file...")
+            logger.info("-" * 80)
+            logger.info("Step 1: Downloading audio file...")
+            logger.info(f"Episode URL: {url}")
+            logger.info(f"Audio directory: {AUDIO_DIR}")
+            logger.info("-" * 80)
             audio_file, downloaded_episode_id = download_xiaoyuzhou_audio(url, AUDIO_DIR)
             
             # Use episode_id from download if we didn't have it before
@@ -328,9 +335,15 @@ class XiaoyuzhouScraper(BaseScraper):
                 transcript_file = AUDIO_DIR / f"episode_{episode_id}.txt"
             
             if audio_file:
-                logger.info(f"Audio downloaded: {audio_file}")
+                logger.info(f"✓ Audio downloaded successfully: {audio_file}")
+                file_size_mb = audio_file.stat().st_size / (1024 * 1024) if audio_file.exists() else 0
+                logger.info(f"  Audio file size: {file_size_mb:.1f} MB")
                 # Transcribe audio and save to file
-                logger.info("Transcribing audio...")
+                logger.info("-" * 80)
+                logger.info("Step 2: Transcribing audio with Gemini...")
+                logger.info(f"Audio file: {audio_file}")
+                logger.info("This may take several minutes depending on audio length...")
+                logger.info("-" * 80)
                 transcript = transcribe_audio_with_gemini(audio_file, transcript_file, gemini_api_key)
                 if transcript:
                     logger.info(f"Transcription completed: {len(transcript)} characters")
@@ -346,7 +359,12 @@ class XiaoyuzhouScraper(BaseScraper):
         # Generate summary
         summary = None
         if transcript and transcript != "（转录失败）" and transcript != "（音频下载失败，无法转录）":
-            logger.info("Generating summary...")
+            logger.info("-" * 80)
+            logger.info("Step 3: Generating summary from shownotes and transcript...")
+            logger.info(f"Shownotes length: {len(shownotes_text)} characters")
+            logger.info(f"Transcript length: {len(transcript)} characters")
+            logger.info("This may take a few minutes...")
+            logger.info("-" * 80)
             summary = generate_podcast_summary(shownotes_text, transcript, gemini_api_key)
             if summary:
                 logger.info(f"Summary generated: {len(summary)} characters")
@@ -788,9 +806,13 @@ class XiaoyuzhouScraper(BaseScraper):
         
         # Save HTML (only save to output_dir, like WeChat articles - no translation needed)
         try:
+            logger.info("-" * 80)
+            logger.info("Step 4: Saving HTML file...")
+            logger.info(f"Output file: {filepath}")
+            logger.info("-" * 80)
             with open(filepath, 'w', encoding='utf-8') as f:
                 f.write(html_content)
-            logger.info(f"Saved Xiaoyuzhou episode to: {filepath}")
+            logger.info(f"✓ Saved Xiaoyuzhou episode to: {filepath}")
             
             # Create and save metadata JSON file (same as other articles)
             # For Xiaoyuzhou: author should be the podcast show name (category), category should be "播客"
