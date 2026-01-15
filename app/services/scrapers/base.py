@@ -182,4 +182,28 @@ class BaseScraper(ABC):
             body_html=body_html,
             body_element=body_element
         )
+    
+    def save_article(self, url: str, result: ScraperResult, date_str: str, output_dir: str, 
+                     zh_dir: str = None, gemini_api_key: str = None, **kwargs) -> Tuple[Optional[str], Optional[str]]:
+        """Save article HTML to file. Override in subclasses for custom saving logic.
+        
+        Args:
+            url: Article URL
+            result: ScraperResult from scraping
+            date_str: Date string for filename (YYYY-MM-DD)
+            output_dir: Output directory for English files
+            zh_dir: Directory for Chinese translations (optional)
+            gemini_api_key: Gemini API key for translation (optional)
+            **kwargs: Additional arguments for subclasses
+            
+        Returns:
+            Tuple of (original_filepath, translated_filepath) where translated_filepath may be None
+        """
+        # Default implementation: save HTML as-is
+        # Subclasses can override this for custom behavior (e.g., Xiaoyuzhou with audio processing)
+        import os
+        from pathlib import Path
+        
+        # This is a placeholder - subclasses should override
+        raise NotImplementedError("Subclasses should implement save_article or use default save logic")
 

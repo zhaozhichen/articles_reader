@@ -223,7 +223,7 @@ async def list_articles(
     lang: Optional[str] = Query(None, description="Filter by language: 'en' or 'zh'"),
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(20, ge=1, le=100, description="Items per page"),
-    sort: str = Query("date_desc", description="Sort order: date_desc, date_asc"),
+    sort: str = Query("created_desc", description="Sort order: created_desc, date_desc, created_asc, date_asc"),
     db: Session = Depends(get_db)
 ):
     """
@@ -239,13 +239,13 @@ async def list_articles(
     - **lang**: Filter by language ('en' for English only, 'zh' for Chinese only)
     - **page**: Page number (starts from 1)
     - **limit**: Items per page (max 100)
-    - **sort**: Sort order (date_desc, date_asc)
+    - **sort**: Sort order (created_desc=按添加时间从新到旧, date_desc=按文章时间从新到旧, created_asc=按添加时间从旧到新, date_asc=按文章时间从旧到新)
     """
     try:
         # Build query
         query = db.query(Article)
         
-        logger.info(f"Received request: search='{search}', lang='{lang}', page={page}, limit={limit}")
+        logger.info(f"Received request: search='{search}', lang='{lang}', page={page}, limit={limit}, sort='{sort}'")
         
         # Apply search filter first (search in titles and HTML content)
         if search and search.strip():
@@ -396,10 +396,17 @@ async def list_articles(
         logger.info(f"Total articles matching filters: {total}")
         
         # Apply sorting
-        if sort == "date_asc":
+        if sort == "created_desc":
+            query = query.order_by(Article.created_at.desc())
+        elif sort == "created_asc":
+            query = query.order_by(Article.created_at.asc())
+        elif sort == "date_asc":
             query = query.order_by(Article.date.asc())
-        else:  # date_desc (default)
+        elif sort == "date_desc":
             query = query.order_by(Article.date.desc())
+        else:  # Unknown sort, default to created_desc
+            logger.warning(f"Unknown sort parameter: '{sort}', defaulting to created_desc")
+            query = query.order_by(Article.created_at.desc())
         
         # Apply pagination
         offset = (page - 1) * limit

@@ -1074,6 +1074,15 @@
                 <h1>📰 Articles Reader</h1>
                 <div class="header-actions">
                     <button id="starFilterBtn" class="star-filter-button" onclick="toggleStarFilter()" title="筛选星标文章">⭐</button>
+                    <div class="sort-selector">
+                        <label for="sortSelect" style="color: #666; font-size: 14px; margin-right: 5px;">排序:</label>
+                        <select id="sortSelect" onchange="changeSortOrder()" style="padding: 8px 12px; border: 2px solid #e0e0e0; border-radius: 6px; font-size: 14px; background: white; cursor: pointer;">
+                            <option value="created_desc">按添加时间从新到旧</option>
+                            <option value="date_desc">按文章时间从新到旧</option>
+                            <option value="created_asc">按添加时间从旧到新</option>
+                            <option value="date_asc">按文章时间从旧到新</option>
+                        </select>
+                    </div>
                     <div class="language-toggle">
                         <span style="color: #666; font-size: 14px; margin-right: 5px;">语言:</span>
                         <button id="langZh" class="active" onclick="setLanguage('zh')">中文</button>
@@ -1253,6 +1262,7 @@
     <script>
         const API_BASE = window.location.origin;
         let currentLanguage = 'zh';  // Default to Chinese
+        let currentSort = localStorage.getItem('articleSort') || 'created_desc';  // Default to 按添加时间从新到旧
         let currentPage = 1;
         let currentLimit = 20;
         let totalPages = 1;
@@ -1346,6 +1356,14 @@
                 tooltip.style.display = 'none';
             }
         });
+
+        function changeSortOrder() {
+            const sortSelect = document.getElementById('sortSelect');
+            currentSort = sortSelect.value;
+            localStorage.setItem('articleSort', currentSort);
+            currentPage = 1;
+            loadArticles();
+        }
 
         function setLanguage(lang) {
             currentLanguage = lang;
@@ -1467,7 +1485,7 @@
                 const params = new URLSearchParams({
                     page: pageToUse.toString(),
                     limit: currentLimit.toString(),
-                    sort: 'date_desc'
+                    sort: currentSort
                 });
 
                 // Add language filter when searching (to filter results by language)
@@ -1619,18 +1637,6 @@
                             <div class="article-meta-item">
                                 <span>📅</span>
                                 <span>${dateStr}</span>
-                            </div>
-                            <div class="article-meta-item">
-                                <span>📂</span>
-                                <span>${escapeHtml(article.category)}</span>
-                            </div>
-                            <div class="article-meta-item">
-                                <span>✍️</span>
-                                <span>${escapeHtml(article.author)}</span>
-                            </div>
-                            <div class="article-meta-item">
-                                <span>📰</span>
-                                <span>${escapeHtml(article.source)}</span>
                             </div>
                         </div>
                         <div class="article-tags">
@@ -2516,6 +2522,12 @@
         
         // Initialize star filter button state
         updateStarFilterButton();
+        
+        // Initialize sort selector from localStorage
+        const sortSelect = document.getElementById('sortSelect');
+        if (sortSelect) {
+            sortSelect.value = currentSort;
+        }
         
         loadFilterOptions();
         loadArticles();
