@@ -208,6 +208,8 @@ The script will:
 
 ### Scheduled Scraping (Optional)
 
+⚠️ **IMPORTANT WARNING**: Before enabling scheduled scraping or manually importing articles, ensure you have valid subscription/membership access to **New Yorker**, **Atlantic**, and **New York Times**. This application scrapes content from these sources, and you must have proper authorization to access and download their articles. Using this tool without proper subscription may violate terms of service.
+
 By default, scheduled scraping is **disabled**. To enable automatic daily scraping:
 
 1. Set `ENABLE_SCHEDULED_SCRAPING=true` in your `.env` file
