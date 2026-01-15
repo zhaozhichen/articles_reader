@@ -33,14 +33,15 @@
 
         .header-top {
             display: flex;
-            justify-content: space-between;
-            align-items: center;
+            flex-direction: column;
+            gap: 15px;
             margin-bottom: 20px;
         }
 
         .header h1 {
             color: #333;
             margin: 0;
+            width: 100%;
         }
 
         .language-toggle {
@@ -78,6 +79,7 @@
             display: flex;
             gap: 15px;
             align-items: center;
+            justify-content: flex-start;
         }
 
         .star-filter-button {
@@ -736,8 +738,8 @@
 
         .modal-header {
             display: flex;
-            justify-content: space-between;
-            align-items: center;
+            flex-direction: column;
+            gap: 15px;
             margin-bottom: 20px;
             padding-bottom: 15px;
             padding-top: 10px;
@@ -801,13 +803,15 @@
 
         .modal-header h2 {
             color: #333;
-            flex: 1;
+            width: 100%;
+            margin: 0;
         }
 
         .modal-actions {
             display: flex;
             gap: 10px;
             align-items: center;
+            justify-content: flex-start;
             position: relative;
             z-index: 1002;
         }
@@ -1141,29 +1145,29 @@
                             <div class="filters-grid">
                                 <div class="filter-group">
                                     <label>出处</label>
-                                    <select id="filterSource" onchange="applyFilters()">
+                                    <select id="filterSource" onchange="applyFilters('source')">
                                         <option value="">全部</option>
                                     </select>
                                 </div>
                                 <div class="filter-group">
                                     <label>类别</label>
-                                    <select id="filterCategory" onchange="applyFilters()">
+                                    <select id="filterCategory" onchange="applyFilters('category')">
                                         <option value="">全部</option>
                                     </select>
                                 </div>
                                 <div class="filter-group">
                                     <label>作者</label>
-                                    <select id="filterAuthor" onchange="applyFilters()">
+                                    <select id="filterAuthor" onchange="applyFilters('author')">
                                         <option value="">全部</option>
                                     </select>
                                 </div>
                                 <div class="filter-group">
                                     <label>开始日期</label>
-                                    <input type="date" id="filterDateFrom" onchange="applyFilters()">
+                                    <input type="date" id="filterDateFrom" onchange="applyFilters('date_from')">
                                 </div>
                                 <div class="filter-group">
                                     <label>结束日期</label>
-                                    <input type="date" id="filterDateTo" onchange="applyFilters()">
+                                    <input type="date" id="filterDateTo" onchange="applyFilters('date_to')">
                                 </div>
                             </div>
                             <div class="filter-actions">
@@ -1277,48 +1281,143 @@
         let hasMore = true;
         let observer = null;
 
-        // Load filter options on page load
-        async function loadFilterOptions() {
+        // Load filter options on page load or when filters change
+        async function loadFilterOptions(excludeField = null) {
             try {
-                const response = await fetch(`${API_BASE}/api/articles/filters/options`);
+                // Build query parameters based on current filter values
+                // Exclude the field we're updating (so we get options for that field)
+                const params = new URLSearchParams();
+                
+                const currentCategory = document.getElementById('filterCategory').value;
+                const currentAuthor = document.getElementById('filterAuthor').value;
+                const currentSource = document.getElementById('filterSource').value;
+                const currentDateFrom = document.getElementById('filterDateFrom').value;
+                const currentDateTo = document.getElementById('filterDateTo').value;
+                
+                // Add all current filter values to query parameters
+                // excludeField only affects which dropdown gets updated, not which filters are applied
+                // We always send all filter values so backend can filter the options correctly
+                if (currentCategory) {
+                    params.append('category', currentCategory);
+                }
+                if (currentAuthor) {
+                    params.append('author', currentAuthor);
+                }
+                if (currentSource) {
+                    params.append('source', currentSource);
+                }
+                if (currentDateFrom) {
+                    params.append('date_from', currentDateFrom);
+                }
+                if (currentDateTo) {
+                    params.append('date_to', currentDateTo);
+                }
+                
+                const queryString = params.toString();
+                const url = queryString 
+                    ? `${API_BASE}/api/articles/filters/options?${queryString}`
+                    : `${API_BASE}/api/articles/filters/options`;
+                
+                console.log('[Filter Options] Loading with excludeField:', excludeField);
+                console.log('[Filter Options] Current values - source:', currentSource, 'category:', currentCategory, 'author:', currentAuthor);
+                console.log('[Filter Options] Request URL:', url);
+                
+                const response = await fetch(url);
                 if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error('[Filter Options] Response error:', response.status, errorText);
                     throw new Error(`Failed to load filter options: HTTP ${response.status}: ${response.statusText}`);
                 }
                 filterOptions = await response.json();
-                populateFilterSelects();
+                console.log('[Filter Options] Received options:', {
+                    categories: filterOptions.categories?.length || 0,
+                    authors: filterOptions.authors?.length || 0,
+                    sources: filterOptions.sources?.length || 0
+                });
+                console.log('[Filter Options] Sample categories:', filterOptions.categories?.slice(0, 5));
+                console.log('[Filter Options] Sample authors:', filterOptions.authors?.slice(0, 5));
+                populateFilterSelects(excludeField);
             } catch (error) {
                 console.error('Error loading filter options:', error);
                 throw error; // Re-throw so caller can handle it
             }
         }
 
-        function populateFilterSelects() {
-            // Populate category select
-            const categorySelect = document.getElementById('filterCategory');
-            filterOptions.categories.forEach(cat => {
-                const option = document.createElement('option');
-                option.value = cat;
-                option.textContent = cat;
-                categorySelect.appendChild(option);
-            });
+        function populateFilterSelects(excludeField = null) {
+            // Save current selected values before clearing
+            const currentCategory = document.getElementById('filterCategory').value;
+            const currentAuthor = document.getElementById('filterAuthor').value;
+            const currentSource = document.getElementById('filterSource').value;
+            
+            // Populate category select (if not excluded)
+            if (excludeField !== 'category') {
+                const categorySelect = document.getElementById('filterCategory');
+                const beforeCount = categorySelect.options.length;
+                // Clear existing options except "全部"
+                while (categorySelect.options.length > 1) {
+                    categorySelect.remove(1);
+                }
+                filterOptions.categories.forEach(cat => {
+                    const option = document.createElement('option');
+                    option.value = cat;
+                    option.textContent = cat;
+                    categorySelect.appendChild(option);
+                });
+                console.log(`[Filter Options] Updated category dropdown: ${beforeCount} -> ${categorySelect.options.length} options`);
+                // Restore selected value if it still exists
+                if (currentCategory && filterOptions.categories.includes(currentCategory)) {
+                    categorySelect.value = currentCategory;
+                } else if (currentCategory) {
+                    // If selected value no longer exists, clear it
+                    categorySelect.value = '';
+                }
+            }
 
-            // Populate author select
-            const authorSelect = document.getElementById('filterAuthor');
-            filterOptions.authors.forEach(author => {
-                const option = document.createElement('option');
-                option.value = author;
-                option.textContent = author;
-                authorSelect.appendChild(option);
-            });
+            // Populate author select (if not excluded)
+            if (excludeField !== 'author') {
+                const authorSelect = document.getElementById('filterAuthor');
+                const beforeCount = authorSelect.options.length;
+                // Clear existing options except "全部"
+                while (authorSelect.options.length > 1) {
+                    authorSelect.remove(1);
+                }
+                filterOptions.authors.forEach(author => {
+                    const option = document.createElement('option');
+                    option.value = author;
+                    option.textContent = author;
+                    authorSelect.appendChild(option);
+                });
+                console.log(`[Filter Options] Updated author dropdown: ${beforeCount} -> ${authorSelect.options.length} options`);
+                // Restore selected value if it still exists
+                if (currentAuthor && filterOptions.authors.includes(currentAuthor)) {
+                    authorSelect.value = currentAuthor;
+                } else if (currentAuthor) {
+                    // If selected value no longer exists, clear it
+                    authorSelect.value = '';
+                }
+            }
 
-            // Populate source select
+            // Populate source select (if not excluded)
+            if (excludeField !== 'source') {
             const sourceSelect = document.getElementById('filterSource');
+                // Clear existing options except "全部"
+                while (sourceSelect.options.length > 1) {
+                    sourceSelect.remove(1);
+                }
             filterOptions.sources.forEach(source => {
                 const option = document.createElement('option');
                 option.value = source;
                 option.textContent = source;
                 sourceSelect.appendChild(option);
             });
+                // Restore selected value if it still exists
+                if (currentSource && filterOptions.sources.includes(currentSource)) {
+                    sourceSelect.value = currentSource;
+                } else if (currentSource) {
+                    // If selected value no longer exists, clear it
+                    sourceSelect.value = '';
+                }
+            }
 
             // Set date range
             if (filterOptions.date_range.min) {
@@ -1428,7 +1527,7 @@
             }
         }
 
-        function applyFilters() {
+        async function applyFilters(excludeField = null) {
             // Preserve current starred filter (set by title bar button)
             const currentStarred = currentFilters.starred !== undefined ? currentFilters.starred : null;
             currentFilters = {
@@ -1440,11 +1539,16 @@
                 starred: currentStarred
             };
             updateStarFilterButton();
+            
+            // Reload filter options based on current selections (excluding the field that just changed)
+            // This ensures other dropdowns only show values available after filtering
+            await loadFilterOptions(excludeField);
+            
             currentPage = 1;
             loadArticles();
         }
 
-        function resetFilters() {
+        async function resetFilters() {
             document.getElementById('filterCategory').value = '';
             document.getElementById('filterAuthor').value = '';
             document.getElementById('filterSource').value = '';
@@ -1452,6 +1556,10 @@
             document.getElementById('filterDateTo').value = '';
             currentFilters = {};
             updateStarFilterButton();
+            
+            // Reload all filter options (no filters applied)
+            await loadFilterOptions();
+            
             currentPage = 1;
             loadArticles();
         }

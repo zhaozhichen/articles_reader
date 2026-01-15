@@ -10,7 +10,7 @@ import threading
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz
-from app.config import BASE_DIR, HTML_DIR, HTML_DIR_EN, HTML_DIR_ZH
+from app.config import BASE_DIR, HTML_DIR, HTML_DIR_EN, HTML_DIR_ZH, ENABLE_SCHEDULED_SCRAPING
 from app.database import SessionLocal
 from app.models import Article
 from app.services.importer import import_articles_from_directory
@@ -201,30 +201,44 @@ async def run_daily_scrape(target_date_str: Optional[str] = None):
                 _active_processes.discard(proc)
 
 def start_scheduler():
-    """Start the scheduler with daily jobs at 7 PM and 11 PM Eastern Time."""
+    """Start the scheduler with daily jobs at 7 PM and 11 PM Eastern Time.
+    
+    Scheduled scraping jobs (New Yorker and Atlantic) will only run if
+    ENABLE_SCHEDULED_SCRAPING is set to 'true' in the environment variables.
+    """
     eastern = pytz.timezone('America/New_York')
     
-    # Schedule daily job at 7:00 PM Eastern Time (full scrape and translate)
-    scheduler.add_job(
-        run_daily_scrape,
-        trigger=CronTrigger(hour=19, minute=0, timezone=eastern),
-        id='daily_scrape',
-        name='Daily article scrape',
-        replace_existing=True
-    )
+    # Check if scheduled scraping is enabled
+    if ENABLE_SCHEDULED_SCRAPING:
+        logger.info("Scheduled scraping is ENABLED. Daily scrape jobs will run.")
+        
+        # Schedule daily job at 7:00 PM Eastern Time (full scrape and translate)
+        scheduler.add_job(
+            run_daily_scrape,
+            trigger=CronTrigger(hour=19, minute=0, timezone=eastern),
+            id='daily_scrape',
+            name='Daily article scrape',
+            replace_existing=True
+        )
+        
+        # Schedule same job at 11:00 PM Eastern Time
+        # If 7 PM job completed, this will be a no-op (script skips existing files)
+        # If 7 PM job didn't complete, this will continue the work
+        scheduler.add_job(
+            run_daily_scrape,
+            trigger=CronTrigger(hour=23, minute=0, timezone=eastern),
+            id='daily_scrape_backup',
+            name='Daily article scrape (backup)',
+            replace_existing=True
+        )
+        
+        logger.info("Daily scrape scheduled for 7:00 PM Eastern Time")
+        logger.info("Backup scrape scheduled for 11:00 PM Eastern Time")
+    else:
+        logger.info("Scheduled scraping is DISABLED. Set ENABLE_SCHEDULED_SCRAPING=true in .env to enable.")
+        logger.info("Daily scrape jobs will NOT run automatically.")
     
-    # Schedule same job at 11:00 PM Eastern Time
-    # If 7 PM job completed, this will be a no-op (script skips existing files)
-    # If 7 PM job didn't complete, this will continue the work
-    scheduler.add_job(
-        run_daily_scrape,
-        trigger=CronTrigger(hour=23, minute=0, timezone=eastern),
-        id='daily_scrape_backup',
-        name='Daily article scrape (backup)',
-        replace_existing=True
-    )
-    
-    # Schedule audio cleanup job daily at 2:00 AM Eastern Time
+    # Schedule audio cleanup job daily at 2:00 AM Eastern Time (always runs)
     scheduler.add_job(
         cleanup_old_audio_files,
         trigger=CronTrigger(hour=2, minute=0, timezone=eastern),
@@ -235,8 +249,6 @@ def start_scheduler():
     )
     
     scheduler.start()
-    logger.info("Scheduler started. Daily scrape scheduled for 7:00 PM Eastern Time")
-    logger.info("Backup scrape scheduled for 11:00 PM Eastern Time")
     logger.info("Audio cleanup scheduled for 2:00 AM Eastern Time (5 day TTL)")
     
     # On startup, check if there are any unimported articles from today

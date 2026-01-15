@@ -20,8 +20,14 @@ import os
 import argparse
 import time
 import random
+import hashlib
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
+from urllib.parse import urljoin, urlparse
+from bs4 import BeautifulSoup
+import requests
 
 # Add parent directory to path to import app modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -55,6 +61,124 @@ def sanitize_filename(text):
     if len(text) > 100:
         text = text[:100]
     return text
+
+
+def download_image(img_url: str, output_dir: str, article_url: str) -> Optional[str]:
+    """Download an image and return the local path relative to the HTML file.
+    
+    Args:
+        img_url: Image URL (may be absolute or relative)
+        output_dir: Directory where the HTML file is saved
+        article_url: Original article URL (for resolving relative URLs)
+    
+    Returns:
+        Local path relative to HTML file (e.g., 'images/img_abc123.jpg'), or None if download failed
+    """
+    try:
+        # Resolve relative URLs
+        if not img_url.startswith('http'):
+            img_url = urljoin(article_url, img_url)
+        
+        # Skip data URLs and invalid URLs
+        if img_url.startswith('data:') or not img_url.startswith('http'):
+            return None
+        
+        # Create images subdirectory
+        images_dir = os.path.join(output_dir, 'images')
+        os.makedirs(images_dir, exist_ok=True)
+        
+        # Generate filename from URL hash and extension
+        parsed_url = urlparse(img_url)
+        url_hash = hashlib.md5(img_url.encode()).hexdigest()[:12]
+        ext = os.path.splitext(parsed_url.path)[1] or '.jpg'
+        # Remove query parameters from extension
+        ext = ext.split('?')[0]
+        if not ext or ext == '.':
+            ext = '.jpg'
+        
+        local_filename = f"img_{url_hash}{ext}"
+        local_path = os.path.join(images_dir, local_filename)
+        
+        # Skip if already downloaded
+        if os.path.exists(local_path):
+            logger.debug(f"    Image already exists: {local_filename}")
+            return os.path.join('images', local_filename)
+        
+        # Download image
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Referer': article_url
+        }
+        
+        response = requests.get(img_url, headers=headers, timeout=30, stream=True)
+        response.raise_for_status()
+        
+        # Save image
+        with open(local_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        
+        logger.debug(f"    Downloaded image: {local_filename}")
+        return os.path.join('images', local_filename)
+        
+    except Exception as e:
+        logger.warning(f"    Failed to download image {img_url}: {e}")
+        return None
+
+
+def process_images_in_html(html: str, output_dir: str, article_url: str) -> str:
+    """Download all images in HTML and update image paths to local files.
+    
+    Args:
+        html: HTML content
+        output_dir: Directory where the HTML file is saved
+        article_url: Original article URL
+    
+    Returns:
+        Updated HTML with local image paths
+    """
+    soup = BeautifulSoup(html, 'html.parser')
+    
+    # Find all img tags
+    img_tags = soup.find_all('img')
+    downloaded_count = 0
+    failed_count = 0
+    
+    for img in img_tags:
+        # Get image URL from various attributes
+        img_url = None
+        for attr in ['src', 'data-src', 'data-lazy-src', 'data-original']:
+            if img.get(attr):
+                img_url = img.get(attr)
+                break
+        
+        if not img_url:
+            continue
+        
+        # Skip data URLs and placeholder images
+        if img_url.startswith('data:') or 'placeholder' in img_url.lower():
+            continue
+        
+        # Download image
+        local_path = download_image(img_url, output_dir, article_url)
+        
+        if local_path:
+            # Update src attribute
+            img['src'] = local_path
+            # Remove other src attributes to avoid conflicts
+            for attr in ['data-src', 'data-lazy-src', 'data-original']:
+                if attr in img.attrs:
+                    del img[attr]
+            downloaded_count += 1
+        else:
+            failed_count += 1
+    
+    if downloaded_count > 0:
+        logger.info(f"    Downloaded {downloaded_count} images")
+    if failed_count > 0:
+        logger.warning(f"    Failed to download {failed_count} images")
+    
+    return str(soup)
 
 
 # Removed: save_xiaoyuzhou_episode function moved to app/services/scrapers/xiaoyuzhou.py as save_article method
@@ -128,22 +252,27 @@ def save_article_html(url, target_date=None, output_dir='.', translate=False, ge
     filename = f"{date_str}_{source_slug}_{category_safe}_{author_safe}_{title_safe}.html"
     filepath = os.path.join(output_dir, filename)
     
-    # Save the original HTML
+    # Process images: download and update paths
+    logger.info(f"    Processing images...")
+    processed_html = process_images_in_html(result.html, output_dir, url)
+    
+    # Save the original HTML with processed images
     translated_filepath = None
     try:
         with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(result.html)
+            f.write(processed_html)
         
         # Translate if requested (with retry mechanism)
         if translate:
             logger.info(f"    Translating to Simplified Chinese...")
             # Translate with retry mechanism
             # Note: translate_html_with_gemini will extract body internally
+            # Use processed_html (with local images) for translation
             try:
                 logger.info(f"    [DEBUG] About to call translate_html_with_gemini_retry for {filename}")
-                logger.info(f"    [DEBUG] HTML content length: {len(result.html)} chars")
+                logger.info(f"    [DEBUG] HTML content length: {len(processed_html)} chars")
                 translated_html = translate_html_with_gemini_retry(
-                    result.html, 
+                    processed_html, 
                     gemini_api_key, 
                     max_retries=2,
                     filename=filename

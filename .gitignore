@@ -60,3 +60,4 @@ Thumbs.db
 
 data/audio/*.mp3
 data/audio/*.txt
+.venv

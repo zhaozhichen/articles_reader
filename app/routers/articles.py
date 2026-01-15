@@ -533,6 +533,35 @@ async def get_article_html(
         with open(file_path, 'r', encoding='utf-8') as f:
             html_content = f.read()
         
+        # Replace relative image paths with API URLs
+        # Images are stored as relative paths like "images/img_xxx.jpg"
+        # We need to convert them to API URLs like "/api/articles/{article_id}/images/images/img_xxx.jpg"
+        import re
+        def replace_image_path(match):
+            img_path = match.group(1)
+            # Skip if already an absolute URL (http/https)
+            if img_path.startswith('http://') or img_path.startswith('https://'):
+                return match.group(0)
+            # Convert relative path to API URL
+            api_url = f"/api/articles/{article_id}/images/{img_path}"
+            return f'src="{api_url}"'
+        
+        # Replace src="images/..." with API URLs
+        html_content = re.sub(r'src="([^"]*images/[^"]+)"', replace_image_path, html_content)
+        # Also handle srcset attributes
+        def replace_srcset(match):
+            srcset_content = match.group(1)
+            # Replace each URL in srcset
+            def replace_srcset_url(url_match):
+                url = url_match.group(1)
+                if url.startswith('http://') or url.startswith('https://'):
+                    return url_match.group(0)
+                api_url = f"/api/articles/{article_id}/images/{url}"
+                return url_match.group(0).replace(url, api_url)
+            srcset_content = re.sub(r'([^\s,]+)', replace_srcset_url, srcset_content)
+            return f'srcset="{srcset_content}"'
+        html_content = re.sub(r'srcset="([^"]+)"', replace_srcset, html_content)
+        
         return Response(
             content=html_content,
             media_type="text/html"
@@ -547,34 +576,178 @@ async def get_article_html(
             detail=f"Error serving article HTML: {str(e)}"
         )
 
+@router.get("/{article_id}/images/{image_path:path}")
+async def get_article_image(
+    article_id: str,
+    image_path: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Get an image file for an article.
+    
+    - **article_id**: Article ID
+    - **image_path**: Path to the image file (relative to article HTML file, e.g., "images/img_xxx.jpg")
+    """
+    try:
+        article = db.query(Article).filter(Article.id == article_id).first()
+        
+        if not article:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Article not found"
+            )
+        
+        # Determine which directory to look in based on article's HTML file
+        # Images are stored in the same directory as the HTML file (in an "images" subdirectory)
+        if article.html_file_en:
+            en_path = Path(article.html_file_en)
+            if en_path.parts[0] == 'en':
+                filename = en_path.name
+                html_dir = HTML_DIR_EN
+            else:
+                html_dir = HTML_DIR_EN
+        else:
+            html_dir = HTML_DIR_EN
+        
+        # Construct image file path
+        # image_path is like "images/img_xxx.jpg"
+        image_file = html_dir / image_path
+        
+        # Security: ensure the image path is within the HTML directory
+        try:
+            image_file.resolve().relative_to(html_dir.resolve())
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Invalid image path"
+            )
+        
+        if not image_file.exists():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Image not found: {image_path}"
+            )
+        
+        # Determine content type from file extension
+        from fastapi.responses import FileResponse
+        media_type = "image/jpeg"  # default
+        ext = image_file.suffix.lower()
+        if ext in ['.png']:
+            media_type = "image/png"
+        elif ext in ['.gif']:
+            media_type = "image/gif"
+        elif ext in ['.webp']:
+            media_type = "image/webp"
+        elif ext in ['.svg']:
+            media_type = "image/svg+xml"
+        
+        return FileResponse(
+            path=str(image_file),
+            media_type=media_type
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error serving article image: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error serving article image: {str(e)}"
+        )
+
 @router.get("/filters/options", response_model=FilterOptionsResponse)
 async def get_filter_options(
+    category: Optional[str] = Query(None, description="Filter by category (exclude from options)"),
+    author: Optional[str] = Query(None, description="Filter by author (exclude from options)"),
+    source: Optional[str] = Query(None, description="Filter by source (exclude from options)"),
+    date_from: Optional[str] = Query(None, description="Filter by date from (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="Filter by date to (YYYY-MM-DD)"),
     db: Session = Depends(get_db)
 ):
     """
     Get available filter options (categories, authors, sources, date range).
+    When filters are provided, returns only options available after applying those filters.
+    This allows cascading filters where selecting one filter updates available options in others.
     """
     try:
-        # Get distinct categories
-        categories = db.query(Article.category).distinct().all()
+        logger.info(f"Getting filter options with filters: category={category}, author={author}, source={source}, date_from={date_from}, date_to={date_to}")
+        
+        # Start with base query
+        query = db.query(Article)
+        total_before = query.count()
+        logger.info(f"Total articles before filtering: {total_before}")
+        
+        # Apply filters to narrow down the articles we consider
+        # Note: We exclude the field we're querying from the filter
+        # (e.g., when getting categories, we don't filter by category)
+        
+        # Apply author filter (when getting categories/sources)
+        if author:
+            query = query.filter(Article.author == author)
+            logger.info(f"Applied author filter: {author}")
+        
+        # Apply source filter (when getting categories/authors)
+        if source:
+            # Check what source values exist in database
+            all_sources = db.query(Article.source).distinct().limit(10).all()
+            logger.info(f"Sample source values in DB: {[s[0] for s in all_sources]}")
+            logger.info(f"Filtering by source: {repr(source)} (type: {type(source)})")
+            query = query.filter(Article.source == source)
+            count_after_source = query.count()
+            logger.info(f"Applied source filter: {source}, articles after filter: {count_after_source}")
+        
+        # Apply category filter (when getting authors/sources)
+        if category:
+            query = query.filter(Article.category == category)
+            logger.info(f"Applied category filter: {category}")
+        
+        # Apply date filters
+        if date_from:
+            try:
+                date_from_obj = datetime.strptime(date_from, '%Y-%m-%d').date()
+                query = query.filter(Article.date >= date_from_obj)
+            except ValueError:
+                pass  # Invalid date format, ignore
+        
+        if date_to:
+            try:
+                date_to_obj = datetime.strptime(date_to, '%Y-%m-%d').date()
+                query = query.filter(Article.date <= date_to_obj)
+            except ValueError:
+                pass  # Invalid date format, ignore
+        
+        # Get distinct categories from filtered articles
+        # Note: When category filter is applied, we still query categories from articles matching other filters
+        # This allows showing all available categories after applying other filters
+        categories = query.with_entities(Article.category).distinct().all()
         categories_list = [cat[0] for cat in categories if cat[0]]
+        logger.info(f"Found {len(categories_list)} categories after filtering (sample: {categories_list[:5]})")
         
-        # Get distinct authors
-        authors = db.query(Article.author).distinct().all()
+        # Get distinct authors from filtered articles
+        # Note: When author filter is applied, we still query authors from articles matching other filters
+        authors = query.with_entities(Article.author).distinct().all()
         authors_list = [auth[0] for auth in authors if auth[0]]
+        logger.info(f"Found {len(authors_list)} authors after filtering (sample: {authors_list[:5]})")
         
-        # Get distinct sources
-        sources = db.query(Article.source).distinct().all()
+        # Get distinct sources from filtered articles
+        # Note: When source filter is applied, we still query sources from articles matching other filters
+        sources = query.with_entities(Article.source).distinct().all()
         sources_list = [src[0] for src in sources if src[0]]
+        logger.info(f"Found {len(sources_list)} sources after filtering")
         
-        # Get date range
-        min_date = db.query(func.min(Article.date)).scalar()
-        max_date = db.query(func.max(Article.date)).scalar()
+        # Get date range from filtered articles
+        min_date = query.with_entities(func.min(Article.date)).scalar()
+        max_date = query.with_entities(func.max(Article.date)).scalar()
         
         date_range = {
             "min": min_date.strftime('%Y-%m-%d') if min_date else None,
             "max": max_date.strftime('%Y-%m-%d') if max_date else None
         }
+        
+        # Log final results
+        logger.info(f"Returning filter options: {len(categories_list)} categories, {len(authors_list)} authors, {len(sources_list)} sources")
+        if source:
+            logger.info(f"With source filter '{source}', should have fewer options than total")
         
         return FilterOptionsResponse(
             categories=sorted(categories_list),
