@@ -78,17 +78,17 @@ class AtlanticScraper(BaseScraper):
         # Extract title
         title = self._extract_title(soup)
         
-        # Extract author
-        author = self._extract_author(soup)
+        # Extract category first (needed for author validation)
+        category = self.extract_category(url, html)
+        
+        # Extract author (with category for validation)
+        author = self._extract_author_with_category(soup, category)
         
         # Extract date
         article_date = self._extract_publish_date(soup)
         if not article_date:
             # Fallback to today's date if no date found
             article_date = date.today()
-        
-        # Extract category
-        category = self.extract_category(url, html)
         
         return {
             'title': title,
@@ -97,6 +97,143 @@ class AtlanticScraper(BaseScraper):
             'category': category,
             'url': url
         }
+    
+    def _extract_author_with_category(self, soup: BeautifulSoup, category: str) -> str:
+        """Extract author name from article HTML, with category for validation."""
+        # Try JSON-LD first
+        json_ld_scripts = soup.find_all('script', type='application/ld+json')
+        for script in json_ld_scripts:
+            try:
+                data = json.loads(script.string)
+                if isinstance(data, dict) and data.get('@type') == 'NewsArticle':
+                    author = data.get('author')
+                    if author:
+                        author_name = None
+                        if isinstance(author, list) and len(author) > 0:
+                            # Get first author
+                            first_author = author[0]
+                            if isinstance(first_author, dict):
+                                if 'name' in first_author:
+                                    author_name = first_author['name']
+                                    # If name is a URL (e.g., Facebook URL), we'll handle it in _clean_author
+                                # If no name but has url, try to extract from url
+                                if not author_name and 'url' in first_author:
+                                    url = first_author['url']
+                                    if isinstance(url, str) and self._is_url(url):
+                                        # Try Atlantic-specific URL pattern first
+                                        match = re.search(r'/(?:author|writers|staff)/([^/?]+)', url)
+                                        if match:
+                                            author_name = match.group(1).replace('-', ' ').title()
+                                        else:
+                                            # If not Atlantic URL, use the URL itself and let _clean_author handle it
+                                            author_name = url
+                            elif isinstance(first_author, str):
+                                author_name = first_author
+                        elif isinstance(author, dict):
+                            if 'name' in author:
+                                author_name = author['name']
+                                # If name is a URL (e.g., Facebook URL), we'll handle it in _clean_author
+                            # If no name but has url, try to extract from url
+                            if not author_name and 'url' in author:
+                                url = author['url']
+                                if isinstance(url, str) and self._is_url(url):
+                                    # Try Atlantic-specific URL pattern first
+                                    match = re.search(r'/(?:author|writers|staff)/([^/?]+)', url)
+                                    if match:
+                                        author_name = match.group(1).replace('-', ' ').title()
+                                    else:
+                                        # If not Atlantic URL, use the URL itself and let _clean_author handle it
+                                        author_name = url
+                        elif isinstance(author, str):
+                            author_name = author
+                        
+                        if author_name:
+                            # Try _clean_author first (handles Facebook/Twitter URLs)
+                            cleaned = self._clean_author(author_name, category)
+                            if cleaned:
+                                return cleaned
+                            # If _clean_author failed and it's a URL, try Atlantic-specific URL pattern
+                            if self._is_url(author_name):
+                                match = re.search(r'/(?:author|writers|staff)/([^/?]+)', author_name)
+                                if match:
+                                    extracted = match.group(1).replace('-', ' ').title()
+                                    cleaned = self._clean_author(extracted, category)
+                                    if cleaned:
+                                        return cleaned
+                            # Skip this source and continue
+                            continue
+            except (json.JSONDecodeError, KeyError):
+                continue
+        
+        # Try meta tag
+        author_meta = soup.find('meta', property='article:author')
+        if author_meta and author_meta.get('content'):
+            author_name = author_meta.get('content')
+            # Try _clean_author first (handles Facebook/Twitter URLs)
+            cleaned = self._clean_author(author_name, category)
+            if cleaned:
+                return cleaned
+            # If _clean_author failed and it's a URL, try Atlantic-specific URL pattern
+            if self._is_url(author_name):
+                match = re.search(r'/(?:author|writers|staff)/([^/?]+)', author_name)
+                if match:
+                    extracted = match.group(1).replace('-', ' ').title()
+                    cleaned = self._clean_author(extracted, category)
+                    if cleaned:
+                        return cleaned
+                # If we can't extract from URL, skip this source
+        
+        # Try meta name="author"
+        author_meta = soup.find('meta', attrs={'name': 'author'})
+        if author_meta and author_meta.get('content'):
+            author_name = author_meta.get('content')
+            # Try _clean_author first (handles Facebook/Twitter URLs)
+            cleaned = self._clean_author(author_name, category)
+            if cleaned:
+                return cleaned
+            # If _clean_author failed and it's a URL, try Atlantic-specific URL pattern
+            if self._is_url(author_name):
+                match = re.search(r'/(?:author|writers|staff)/([^/?]+)', author_name)
+                if match:
+                    extracted = match.group(1).replace('-', ' ').title()
+                    cleaned = self._clean_author(extracted, category)
+                    if cleaned:
+                        return cleaned
+                # If we can't extract from URL, skip this source
+        
+        # Try to find author in byline - look for links with author info
+        byline_links = soup.find_all('a', href=re.compile(r'/author/|/writers/|/staff/'))
+        for byline in byline_links:
+            # Prefer link text over href
+            author_text = byline.get_text().strip()
+            if not author_text:
+                # If no text, try to extract from href
+                href = byline.get('href', '')
+                if href:
+                    # Extract name from URL like /author/john-doe/
+                    match = re.search(r'/(?:author|writers|staff)/([^/]+)', href)
+                    if match:
+                        author_text = match.group(1).replace('-', ' ').title()
+            
+            if author_text:
+                cleaned = self._clean_author(author_text, category)
+                if cleaned:
+                    return cleaned
+        
+        # Try to find author in byline text (not just links)
+        byline_elements = soup.find_all(['span', 'div', 'p'], class_=re.compile(r'byline|author', re.I))
+        for byline in byline_elements:
+            author_text = byline.get_text().strip()
+            # Remove "By " prefix
+            author_text = re.sub(r'^By\s+', '', author_text, flags=re.I)
+            # Remove common suffixes
+            author_text = re.sub(r'\s*[|•]\s*.*$', '', author_text)  # Remove everything after | or •
+            if author_text:
+                cleaned = self._clean_author(author_text, category)
+                if cleaned:
+                    return cleaned
+        
+        return 'unknown'
     
     def extract_body(self, html: str) -> Tuple[Optional[str], Optional[BeautifulSoup]]:
         """Extract the main article body content from HTML."""
@@ -214,48 +351,86 @@ class AtlanticScraper(BaseScraper):
         
         return 'untitled'
     
-    def _extract_author(self, soup: BeautifulSoup) -> str:
-        """Extract author name from article HTML."""
-        # Try JSON-LD first
-        json_ld_scripts = soup.find_all('script', type='application/ld+json')
-        for script in json_ld_scripts:
-            try:
-                data = json.loads(script.string)
-                if isinstance(data, dict) and data.get('@type') == 'NewsArticle':
-                    author = data.get('author')
-                    if author:
-                        if isinstance(author, list) and len(author) > 0:
-                            # Get first author
-                            first_author = author[0]
-                            if isinstance(first_author, dict) and 'name' in first_author:
-                                return first_author['name']
-                            elif isinstance(first_author, str):
-                                return first_author
-                        elif isinstance(author, dict) and 'name' in author:
-                            return author['name']
-                        elif isinstance(author, str):
+    def _is_url(self, text: str) -> bool:
+        """Check if text is a URL."""
+        if not text:
+            return False
+        text = text.strip()
+        # Check for common URL patterns
+        return (text.startswith('http://') or 
+                text.startswith('https://') or 
+                text.startswith('www.') or
+                'facebook.com' in text.lower() or
+                'twitter.com' in text.lower() or
+                'linkedin.com' in text.lower() or
+                'instagram.com' in text.lower() or
+                'theatlantic.com' in text.lower())
+    
+    def _clean_author(self, author: str, category: str = None) -> Optional[str]:
+        """Clean and validate author name."""
+        if not author:
+            return None
+        author = author.strip()
+        
+        # Remove duplicate URLs (e.g., "https://www.facebook.com/https://www.facebook.com/...")
+        if 'https://' in author and author.count('https://') > 1:
+            # Find the last occurrence of https:// and use everything after it
+            parts = author.split('https://')
+            if len(parts) > 1:
+                # Take the last part and reconstruct
+                last_part = parts[-1]
+                if last_part.startswith('www.') or 'facebook.com' in last_part or 'twitter.com' in last_part:
+                    # This is still a URL, try to extract name from it
+                    author = 'https://' + last_part
+                else:
+                    # Use the last part as potential author name
+                    author = last_part.strip()
+        
+        # Skip if it's a URL
+        if self._is_url(author):
+            # Try to extract name from Facebook/Twitter URLs
+            if 'facebook.com' in author.lower():
+                # Extract from Facebook URL: https://www.facebook.com/david-a-graham-318249352182
+                match = re.search(r'facebook\.com/([^/?]+)', author, re.I)
+                if match:
+                    fb_name = match.group(1)
+                    # Remove trailing numbers (like -318249352182)
+                    fb_name = re.sub(r'-\d+$', '', fb_name)
+                    # Convert to readable format: david-a-graham -> David A Graham
+                    author = fb_name.replace('-', ' ').title()
+                    # Validate it looks like a name (not too long, has spaces or is reasonable length)
+                    if len(author) > 3 and len(author) < 100:
+                        return author
+                return None
+            elif 'twitter.com' in author.lower() or 'x.com' in author.lower():
+                # Extract from Twitter URL
+                match = re.search(r'(?:twitter|x)\.com/([^/?]+)', author, re.I)
+                if match:
+                    twitter_name = match.group(1)
+                    # Twitter handles often start with @, remove it
+                    twitter_name = twitter_name.lstrip('@')
+                    # Convert to readable format if it looks like a name
+                    if '-' in twitter_name or '_' in twitter_name:
+                        author = twitter_name.replace('-', ' ').replace('_', ' ').title()
+                        if len(author) > 3 and len(author) < 100:
                             return author
-            except (json.JSONDecodeError, KeyError):
-                continue
+                return None
+            return None
         
-        # Try meta tag
-        author_meta = soup.find('meta', property='article:author')
-        if author_meta and author_meta.get('content'):
-            return author_meta.get('content')
+        # Skip if author equals category (common issue with Atlantic)
+        if category and author.lower() == category.lower():
+            return None
         
-        # Try meta name="author"
-        author_meta = soup.find('meta', attrs={'name': 'author'})
-        if author_meta and author_meta.get('content'):
-            return author_meta.get('content')
+        # Skip if it looks like a URL path
+        if author.startswith('/') or (author.count('/') > 2 and 'http' not in author):
+            return None
         
-        # Try to find author in byline
-        byline = soup.find('a', href=re.compile(r'/author/'))
-        if byline:
-            author_text = byline.get_text().strip()
-            if author_text:
-                return author_text
+        # Skip if it's too short or looks invalid
+        if len(author) < 2 or author.lower() in ['unknown', 'none', 'n/a', '']:
+            return None
         
-        return 'unknown'
+        return author
+    
     
     def _extract_publish_date(self, soup: BeautifulSoup) -> Optional[datetime.date]:
         """Extract publish date from article HTML."""

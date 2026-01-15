@@ -143,17 +143,62 @@ class NewYorkerScraper(BaseScraper):
         
         return 'untitled'
     
+    def _is_url(self, text: str) -> bool:
+        """Check if text is a URL."""
+        if not text:
+            return False
+        text = text.strip()
+        # Check for common URL patterns
+        return (text.startswith('http://') or 
+                text.startswith('https://') or 
+                text.startswith('www.') or
+                'facebook.com' in text.lower() or
+                'twitter.com' in text.lower() or
+                'linkedin.com' in text.lower() or
+                'instagram.com' in text.lower())
+    
+    def _clean_author(self, author: str) -> Optional[str]:
+        """Clean and validate author name."""
+        if not author:
+            return None
+        author = author.strip()
+        
+        # Skip if it's a URL
+        if self._is_url(author):
+            return None
+        
+        # Skip if it looks like a URL path
+        if author.startswith('/') or (author.count('/') > 2 and 'http' not in author):
+            return None
+        
+        # Skip if it's too short or looks invalid
+        if len(author) < 2 or author.lower() in ['unknown', 'none', 'n/a', '']:
+            return None
+        
+        # Remove common URL patterns that might slip through
+        author = re.sub(r'https?://[^\s]+', '', author).strip()
+        if not author or self._is_url(author):
+            return None
+        
+        return author
+    
     def _extract_author(self, soup: BeautifulSoup) -> str:
         """Extract author name from article HTML."""
         # Try meta tag first
         author_meta = soup.find('meta', property='article:author')
         if author_meta and author_meta.get('content'):
-            return author_meta.get('content')
+            author_name = author_meta.get('content')
+            cleaned = self._clean_author(author_name)
+            if cleaned:
+                return cleaned
         
         # Try meta name="author"
         author_meta = soup.find('meta', attrs={'name': 'author'})
         if author_meta and author_meta.get('content'):
-            return author_meta.get('content')
+            author_name = author_meta.get('content')
+            cleaned = self._clean_author(author_name)
+            if cleaned:
+                return cleaned
         
         # Try JSON-LD
         json_ld_scripts = soup.find_all('script', type='application/ld+json')
@@ -164,15 +209,21 @@ class NewYorkerScraper(BaseScraper):
                     # Check for author in various formats
                     if 'author' in data:
                         author = data['author']
+                        author_name = None
                         if isinstance(author, dict) and 'name' in author:
-                            return author['name']
+                            author_name = author['name']
                         elif isinstance(author, list) and len(author) > 0:
                             if isinstance(author[0], dict) and 'name' in author[0]:
-                                return author[0]['name']
+                                author_name = author[0]['name']
                             elif isinstance(author[0], str):
-                                return author[0]
+                                author_name = author[0]
                         elif isinstance(author, str):
-                            return author
+                            author_name = author
+                        
+                        if author_name:
+                            cleaned = self._clean_author(author_name)
+                            if cleaned:
+                                return cleaned
             except (json.JSONDecodeError, KeyError):
                 continue
         

@@ -14,6 +14,65 @@ from app.services.scrapers import get_scraper_for_url
 
 logger = logging.getLogger(__name__)
 
+def is_url(text: str) -> bool:
+    """Check if text is a URL."""
+    if not text:
+        return False
+    text = text.strip()
+    return (text.startswith('http://') or 
+            text.startswith('https://') or 
+            text.startswith('www.') or
+            'facebook.com' in text.lower() or
+            'twitter.com' in text.lower() or
+            'linkedin.com' in text.lower() or
+            'instagram.com' in text.lower() or
+            'nytimes.com' in text.lower() or
+            'theatlantic.com' in text.lower())
+
+def clean_author_from_meta(author: str) -> str:
+    """Clean and extract author name from meta tag content (which might be a URL).
+    
+    Note: This is a fallback function. Import logic now prioritizes JSON metadata
+    which already contains cleaned author names. This is only used when JSON is unavailable.
+    """
+    if not author:
+        return None
+    author = author.strip()
+    
+    # If it's a URL, try to extract name from common patterns
+    if is_url(author):
+        # Try common URL patterns (NYTimes, Atlantic, Facebook)
+        patterns = [
+            (r'/(?:by|writers|authors?|columnists)/([^/?]+)', 'nytimes'),  # NYTimes
+            (r'/(?:author|writers|staff)/([^/?]+)', 'atlantic'),  # Atlantic
+            (r'facebook\.com/([^/?]+)', 'facebook'),  # Facebook
+        ]
+        
+        for pattern, source in patterns:
+            match = re.search(pattern, author, re.I)
+            if match:
+                name = match.group(1)
+                # For Facebook, remove trailing numbers
+                if source == 'facebook':
+                    name = re.sub(r'-\d+$', '', name)
+                # Convert to readable format
+                author_name = name.replace('-', ' ').replace('_', ' ').title()
+                if 3 <= len(author_name) < 100:
+                    return author_name
+        
+        return None  # Can't extract from URL
+    
+    # Basic validation for non-URL strings
+    if (author.startswith('/') or 
+        (author.count('/') > 2 and 'http' not in author) or
+        len(author) < 2 or 
+        author.lower() in ['unknown', 'none', 'n/a', '']):
+        return None
+    
+    # Remove any URL patterns that might slip through
+    author = re.sub(r'https?://[^\s]+', '', author).strip()
+    return author if author and not is_url(author) else None
+
 def normalize_url(url):
     """Normalize URL by removing query parameters, fragments, and trailing slashes.
     
@@ -184,7 +243,11 @@ def extract_metadata_from_html_for_import(html_path, prefer_h1=False):
         
         author_meta = soup.find('meta', property='article:author')
         if author_meta and author_meta.get('content'):
-            metadata['author'] = author_meta.get('content')
+            author_name = author_meta.get('content')
+            # Clean author name - handle URLs
+            author_name = clean_author_from_meta(author_name)
+            if author_name:
+                metadata['author'] = author_name
         
         return metadata
     except Exception as e:
@@ -212,10 +275,28 @@ def import_from_subdirs_inline(en_dir, zh_dir):
                     logger.warning(f"Skipping {en_file.name} (cannot parse filename)")
                     continue
                 
-                en_metadata = extract_metadata_from_html_for_import(en_file)
-                title_en = en_metadata.get('title') or parsed['title']
-                author = en_metadata.get('author') or parsed['author']
-                url = en_metadata.get('url') or ''
+                # Try to read from JSON metadata file first (more reliable)
+                json_file = en_dir / en_file.name.replace('.html', '.json')
+                author = None
+                title_en = None
+                url = ''
+                
+                if json_file.exists():
+                    try:
+                        with open(json_file, 'r', encoding='utf-8') as f:
+                            json_metadata = json.load(f)
+                        author = json_metadata.get('author')
+                        title_en = json_metadata.get('title')
+                        url = json_metadata.get('url', '')
+                    except Exception as e:
+                        logger.warning(f"Could not read JSON metadata from {json_file.name}: {e}")
+                
+                # Fallback to HTML extraction if JSON not available
+                if not author or not title_en or not url:
+                    en_metadata = extract_metadata_from_html_for_import(en_file)
+                    title_en = title_en or en_metadata.get('title') or parsed['title']
+                    author = author or en_metadata.get('author') or parsed['author']
+                    url = url or en_metadata.get('url') or ''
                 
                 zh_file = zh_dir / en_file.name
                 title_zh = None

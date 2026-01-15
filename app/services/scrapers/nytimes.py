@@ -301,19 +301,74 @@ class NewYorkTimesScraper(BaseScraper):
         
         return 'untitled'
     
+    def _is_url(self, text: str) -> bool:
+        """Check if text is a URL."""
+        if not text:
+            return False
+        text = text.strip()
+        # Check for common URL patterns
+        return (text.startswith('http://') or 
+                text.startswith('https://') or 
+                text.startswith('www.') or
+                'facebook.com' in text.lower() or
+                'twitter.com' in text.lower() or
+                'linkedin.com' in text.lower() or
+                'instagram.com' in text.lower() or
+                'nytimes.com' in text.lower())
+    
+    def _clean_author(self, author: str) -> Optional[str]:
+        """Clean and validate author name."""
+        if not author:
+            return None
+        author = author.strip()
+        
+        # Skip if it's a URL
+        if self._is_url(author):
+            return None
+        
+        # Skip if it looks like a URL path
+        if author.startswith('/') or (author.count('/') > 2 and 'http' not in author):
+            return None
+        
+        # Skip if it's too short or looks invalid
+        if len(author) < 2 or author.lower() in ['unknown', 'none', 'n/a', '']:
+            return None
+        
+        # Remove common URL patterns that might slip through
+        author = re.sub(r'https?://[^\s]+', '', author).strip()
+        if not author or self._is_url(author):
+            return None
+        
+        return author
+    
+    def _extract_author_from_link(self, link_element) -> Optional[str]:
+        """Extract author name from a link element, preferring text over URL."""
+        if not link_element:
+            return None
+        
+        # First try to get text from the link
+        author_text = link_element.get_text().strip()
+        if author_text:
+            cleaned = self._clean_author(author_text)
+            if cleaned:
+                return cleaned
+        
+        # If no text, try to extract from href
+        href = link_element.get('href', '')
+        if href:
+            # Extract name from NYTimes author URLs like /by/author-name or /writers/author-name
+            match = re.search(r'/(?:by|writers|authors?)/([^/?]+)', href)
+            if match:
+                author_text = match.group(1).replace('-', ' ').title()
+                cleaned = self._clean_author(author_text)
+                if cleaned:
+                    return cleaned
+        
+        return None
+    
     def _extract_author(self, soup: BeautifulSoup) -> str:
         """Extract author name from article HTML."""
-        # Try meta tag first
-        author_meta = soup.find('meta', property='article:author')
-        if author_meta and author_meta.get('content'):
-            return author_meta.get('content')
-        
-        # Try meta name="author"
-        author_meta = soup.find('meta', attrs={'name': 'author'})
-        if author_meta and author_meta.get('content'):
-            return author_meta.get('content')
-        
-        # Try JSON-LD
+        # Try JSON-LD first (most reliable)
         json_ld_scripts = soup.find_all('script', type='application/ld+json')
         for script in json_ld_scripts:
             try:
@@ -322,29 +377,142 @@ class NewYorkTimesScraper(BaseScraper):
                     # Check for author in various formats
                     if 'author' in data:
                         author = data['author']
+                        author_name = None
                         if isinstance(author, dict):
+                            # Prefer 'name' field
                             if 'name' in author:
-                                return author['name']
+                                author_name = author['name']
+                                # If name is a URL, try to extract from it
+                                if self._is_url(author_name):
+                                    match = re.search(r'/(?:by|writers|authors?|columnists)/([^/?]+)', author_name)
+                                    if match:
+                                        author_name = match.group(1).replace('-', ' ').title()
+                                    else:
+                                        # Can't extract from URL, try url field instead
+                                        author_name = None
                             elif '@type' in author and author.get('@type') == 'Person' and 'name' in author:
-                                return author['name']
+                                author_name = author['name']
+                                # If name is a URL, try to extract from it
+                                if self._is_url(author_name):
+                                    match = re.search(r'/(?:by|writers|authors?|columnists)/([^/?]+)', author_name)
+                                    if match:
+                                        author_name = match.group(1).replace('-', ' ').title()
+                                    else:
+                                        author_name = None
+                            # If no name but has url, try to extract from url
+                            if not author_name and 'url' in author:
+                                url = author['url']
+                                if isinstance(url, str) and self._is_url(url):
+                                    match = re.search(r'/(?:by|writers|authors?|columnists)/([^/?]+)', url)
+                                    if match:
+                                        author_name = match.group(1).replace('-', ' ').title()
                         elif isinstance(author, list) and len(author) > 0:
-                            if isinstance(author[0], dict) and 'name' in author[0]:
-                                return author[0]['name']
-                            elif isinstance(author[0], str):
-                                return author[0]
+                            first_author = author[0]
+                            if isinstance(first_author, dict):
+                                if 'name' in first_author:
+                                    author_name = first_author['name']
+                                    # If name is a URL, try to extract from it
+                                    if self._is_url(author_name):
+                                        match = re.search(r'/(?:by|writers|authors?|columnists)/([^/?]+)', author_name)
+                                        if match:
+                                            author_name = match.group(1).replace('-', ' ').title()
+                                        else:
+                                            author_name = None
+                                # If no name but has url, try to extract from url
+                                if not author_name and 'url' in first_author:
+                                    url = first_author['url']
+                                    if isinstance(url, str) and self._is_url(url):
+                                        match = re.search(r'/(?:by|writers|authors?|columnists)/([^/?]+)', url)
+                                        if match:
+                                            author_name = match.group(1).replace('-', ' ').title()
+                            elif isinstance(first_author, str):
+                                author_name = first_author
                         elif isinstance(author, str):
-                            return author
+                            author_name = author
+                        
+                        if author_name:
+                            # Try cleaning first (handles non-URL cases)
+                            cleaned = self._clean_author(author_name)
+                            if cleaned:
+                                return cleaned
+                            # If cleaning failed and it's a URL, try to extract name from it
+                            if self._is_url(author_name):
+                                match = re.search(r'/(?:by|writers|authors?|columnists)/([^/?]+)', author_name)
+                                if match:
+                                    extracted = match.group(1).replace('-', ' ').title()
+                                    cleaned = self._clean_author(extracted)
+                                    if cleaned:
+                                        return cleaned
+                            # Skip this source and continue
+                            continue
             except (json.JSONDecodeError, KeyError):
                 continue
         
-        # Try to find author in byline
-        byline = soup.find('span', class_=re.compile(r'byline', re.I))
-        if byline:
+        # Try meta tag
+        author_meta = soup.find('meta', property='article:author')
+        if author_meta and author_meta.get('content'):
+            author_name = author_meta.get('content')
+            # Always try _clean_author first (it handles URLs)
+            cleaned = self._clean_author(author_name)
+            if cleaned:
+                return cleaned
+            # If _clean_author failed and it's a URL, try NYTimes-specific URL pattern
+            if self._is_url(author_name):
+                # Extract name from NYTimes author URL like https://www.nytimes.com/by/elaine-sciolino
+                match = re.search(r'/(?:by|writers|authors?|columnists)/([^/?]+)', author_name)
+                if match:
+                    author_name = match.group(1).replace('-', ' ').title()
+                    cleaned = self._clean_author(author_name)
+                    if cleaned:
+                        return cleaned
+                # If we can't extract from URL, skip this source
+        
+        # Try meta name="author"
+        author_meta = soup.find('meta', attrs={'name': 'author'})
+        if author_meta and author_meta.get('content'):
+            author_name = author_meta.get('content')
+            # Always try _clean_author first (it handles URLs)
+            cleaned = self._clean_author(author_name)
+            if cleaned:
+                return cleaned
+            # If _clean_author failed and it's a URL, try NYTimes-specific URL pattern
+            if self._is_url(author_name):
+                # Extract name from NYTimes author URL
+                match = re.search(r'/(?:by|writers|authors?|columnists)/([^/?]+)', author_name)
+                if match:
+                    author_name = match.group(1).replace('-', ' ').title()
+                    cleaned = self._clean_author(author_name)
+                    if cleaned:
+                        return cleaned
+                # If we can't extract from URL, skip this source
+        
+        # Try to find author in byline links (NYTimes often uses links)
+        byline_links = soup.find_all('a', href=re.compile(r'/by/|/writers/|/authors?/|/columnists/'))
+        for link in byline_links:
+            author_name = self._extract_author_from_link(link)
+            if author_name:
+                return author_name
+        
+        # Try to find author in byline text
+        byline_elements = soup.find_all(['span', 'div', 'p'], class_=re.compile(r'byline|author', re.I))
+        for byline in byline_elements:
+            # Check if byline contains a link - prefer link text
+            link = byline.find('a', href=re.compile(r'/by/|/writers/|/authors?/|/columnists/'))
+            if link:
+                author_name = self._extract_author_from_link(link)
+                if author_name:
+                    return author_name
+            
+            # Otherwise, get text from byline
             author_text = byline.get_text().strip()
             # Remove "By " prefix if present
             author_text = re.sub(r'^By\s+', '', author_text, flags=re.I)
+            # Remove common suffixes
+            author_text = re.sub(r'\s*[|•]\s*.*$', '', author_text)  # Remove everything after | or •
             if author_text:
-                return author_text
+                cleaned = self._clean_author(author_text)
+                if cleaned:
+                    return cleaned
         
         return 'unknown'
     
