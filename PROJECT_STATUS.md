@@ -26,10 +26,9 @@
 - ✅ 创建 requirements.txt
 - ✅ 配置健康检查
 
-### 5. 集成配置
-- ✅ 创建 Ktizo 应用配置文件
-- ✅ 配置数据卷挂载
+### 5. 配置管理
 - ✅ 配置环境变量
+- ✅ 配置本地数据目录
 
 ### 6. 工具脚本
 - ✅ 创建数据导入脚本
@@ -38,7 +37,7 @@
 ## 📁 项目结构
 
 ```
-/home/tensor/projects/articles/
+articles_public/
 ├── app/                          # FastAPI 应用
 │   ├── __init__.py
 │   ├── main.py                  # 主应用入口
@@ -71,88 +70,56 @@
 
 ## 🚀 下一步操作
 
-### 1. 构建 Docker 镜像
+### 1. 安装依赖
 
 ```bash
-cd /home/tensor/projects/articles
-docker build -t articles:latest .
+cd /path/to/articles_public
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+pip install -r requirements.txt
 ```
 
-### 2. 生成 Ktizo 配置
+### 2. 配置环境变量
 
 ```bash
-cd /home/tensor/projects/ktizo
-docker run --rm -v "$(pwd):/workspace" -w /workspace node:18-alpine node scripts/generate-config.js
+cp .env.example .env
+# Edit .env and add your GEMINI_API_KEY
 ```
 
-### 3. 更新 docker-compose.yml
-
-在 `/home/tensor/projects/ktizo/docker-compose.yml` 的 `services:` 部分添加：
-
-```yaml
-  articles:
-    image: articles:latest
-    container_name: ktizo-articles
-    restart: unless-stopped
-    volumes:
-      - /home/tensor/projects/articles/data:/app/data
-    environment:
-      - DATABASE_URL=sqlite:///./data/articles.db
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - HOST=0.0.0.0
-      - PORT=8000
-    networks:
-      - ktizo-network
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-```
-
-### 4. 部署
+### 3. 运行应用
 
 ```bash
-cd /home/tensor/projects/ktizo
-docker compose restart caddy
-docker compose build launcher && docker compose up -d launcher
-docker compose up -d articles
+python -m app.main
 ```
 
-### 5. 验证
+### 4. 访问应用
 
-- 访问应用：`http://articles.ktizo.io`
-- 检查日志：`docker compose logs articles`
-- 检查健康状态：`docker compose ps articles`
+- 访问应用：`http://localhost:8000`
+- API 文档：`http://localhost:8000/docs`
+- 健康检查：`http://localhost:8000/health`
 
 ## 📝 注意事项
 
 1. **环境变量**：确保 `GEMINI_API_KEY` 在 `.env` 文件中设置（用于翻译功能）
-2. **数据目录**：确保 `/home/tensor/projects/articles/data` 目录存在且有写权限
-3. **定时任务**：每天凌晨 2:00 自动运行，抓取当天的文章
+2. **数据目录**：确保 `./data` 目录存在且有写权限
+3. **定时任务**：需要设置 `ENABLE_SCHEDULED_SCRAPING=true` 才会自动运行，支持 Aeon 和 Nautilus
 4. **首次使用**：如果有现有的 HTML 文件，需要运行导入脚本
 
 ## 🔧 常用命令
 
 ### 查看日志
 ```bash
-docker compose logs -f articles
+tail -f data/logs/articles.log
 ```
 
 ### 手动导入文章
 ```bash
-docker compose exec articles python scripts/import_articles.py --directory /app/data/html
+python scripts/import_articles.py --directory ./data/html
 ```
 
 ### 手动抓取文章
 ```bash
-docker compose exec articles python scripts/extract_articles_by_date.py "2025-01-15" --translate --output-dir /app/data/html
-```
-
-### 进入容器
-```bash
-docker compose exec articles bash
+python scripts/extract_articles_by_date.py "2025-01-15" --translate --output-dir ./data/html/en --zh-dir ./data/html/zh
 ```
 
 ## ✨ 功能特性

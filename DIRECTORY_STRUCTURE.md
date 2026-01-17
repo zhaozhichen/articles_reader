@@ -28,12 +28,14 @@ YYYY-MM-DD_source_category_author_title.html
 ```
 
 示例：
-- `2025-12-19_newyorker_culture_Joshua_Rothman_Is_A.I._Actually_a_Bubble.html`
-- `2025-06-30_nytimes_interactive_steven-strogatz_Bowling_for_Nobels.html`
+- `2025-12-19_aeon_essays_author_title.html`
+- `2025-06-30_nautilus_science_author_title.html`
 
 **Source标识符**：
-- `newyorker` - New Yorker 文章
-- `nytimes` - New York Times 文章
+- `aeon` - Aeon 文章
+- `nautilus` - Nautilus 文章
+- `wechat` - 公众号文章
+- `xiaoyuzhou` - 小宇宙文章
 
 **注意**：
 - 中文文件使用相同的文件名，存储在 `/zh` 目录中
@@ -78,8 +80,8 @@ curl -X POST http://localhost:8000/api/articles/import
 #### 方法4：通过命令行脚本
 
 ```bash
-cd /home/tensor/projects/ktizo
-docker compose exec articles python scripts/import_from_subdirs.py
+cd /path/to/articles_public
+python scripts/import_from_subdirs.py
 ```
 
 **注意**：
@@ -91,7 +93,7 @@ docker compose exec articles python scripts/import_from_subdirs.py
 如果已有文件在旧位置，可以使用移动脚本：
 
 ```bash
-cd /home/tensor/projects/articles
+cd /path/to/articles_public
 python3 scripts/move_to_subdirs.py --source-dir data/html
 ```
 

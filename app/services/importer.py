@@ -26,8 +26,7 @@ def is_url(text: str) -> bool:
             'twitter.com' in text.lower() or
             'linkedin.com' in text.lower() or
             'instagram.com' in text.lower() or
-            'nytimes.com' in text.lower() or
-            'theatlantic.com' in text.lower())
+)
 
 def clean_author_from_meta(author: str) -> str:
     """Clean and extract author name from meta tag content (which might be a URL).
@@ -41,10 +40,8 @@ def clean_author_from_meta(author: str) -> str:
     
     # If it's a URL, try to extract name from common patterns
     if is_url(author):
-        # Try common URL patterns (NYTimes, Atlantic, Facebook)
+        # Try common URL patterns
         patterns = [
-            (r'/(?:by|writers|authors?|columnists)/([^/?]+)', 'nytimes'),  # NYTimes
-            (r'/(?:author|writers|staff)/([^/?]+)', 'atlantic'),  # Atlantic
             (r'facebook\.com/([^/?]+)', 'facebook'),  # Facebook
         ]
         
@@ -107,9 +104,8 @@ def extract_category_from_url(url, html=None):
     """Extract category from URL path or HTML using appropriate scraper.
     
     Examples:
-    - https://www.newyorker.com/books/book-currents/... -> 'books'
-    - https://www.newyorker.com/culture/postscript/... -> 'culture'
-    - https://www.nytimes.com/interactive/2025/06/30/science/... -> 'science'
+    - https://aeon.co/essays/... -> 'essays'
+    - https://nautil.us/... -> category from page
     
     Args:
         url: Article URL
@@ -131,9 +127,8 @@ def extract_category_from_url(url, html=None):
     parsed = urlparse(url)
     path = parsed.path.strip('/')
     
-    # Common New Yorker categories
-    categories = ['news', 'books', 'culture', 'magazine', 'humor', 'cartoons', 
-                  'puzzles-and-games-dept', 'newsletter', 'video', 'podcast', 'podcasts']
+    # Common categories (fallback for unknown sources)
+    categories = ['essays', 'articles', 'features', 'science', 'philosophy', 'culture']
     
     for category in categories:
         if path.startswith(f'{category}/') or path == category:
@@ -167,7 +162,7 @@ def parse_filename_for_import(filename):
     # Old format has 4+ parts: date_category_author_title
     
     # Known source slugs for detection
-    known_sources = ['newyorker', 'nytimes', 'xiaoyuzhou']
+    known_sources = ['aeon', 'nautilus', 'xiaoyuzhou', 'wechat']
     
     if len(parts) >= 5 and parts[1] in known_sources:
         # New format: date_source_category_author_title
@@ -311,7 +306,7 @@ def import_from_subdirs_inline(en_dir, zh_dir):
                 en_path = f"en/{en_file.name}"
                 
                 # Extract category and source from URL if available, otherwise use filename
-                source = "New Yorker"  # Default
+                source = "Unknown"  # Default
                 source_slug = parsed.get('source_slug')  # May be None for old format files
                 
                 if url:
@@ -332,14 +327,19 @@ def import_from_subdirs_inline(en_dir, zh_dir):
                     category = parsed['category']
                     # If we have source_slug from filename but no URL, try to determine source
                     if source_slug:
-                        if source_slug == 'newyorker':
-                            source = "New Yorker"
-                        elif source_slug == 'nytimes':
-                            source = "New York Times"
+                        if source_slug == 'aeon':
+                            source = "Aeon"
+                        elif source_slug == 'nautilus':
+                            source = "Nautilus"
                         elif source_slug == 'xiaoyuzhou':
                             source = "小宇宙"
                         elif source_slug == 'wechat':
                             source = "公众号"
+                        # Backward compatibility for old sources
+                        elif source_slug == 'newyorker':
+                            source = "New Yorker"
+                        elif source_slug == 'nytimes':
+                            source = "New York Times"
                         elif source_slug == 'atlantic':
                             source = "Atlantic"
                 
@@ -500,9 +500,9 @@ def import_articles_from_directory(directory: Path) -> int:
                     # Update existing article
                     existing.title = metadata.get('title', 'untitled')
                     existing.date = article_date
-                    existing.category = metadata.get('category', 'New Yorker')
+                    existing.category = metadata.get('category', 'Unknown')
                     existing.author = metadata.get('author', 'unknown')
-                    existing.source = metadata.get('source', 'New Yorker')
+                    existing.source = metadata.get('source', 'Unknown')
                     existing.html_file_en = metadata.get('original_file', '')
                     existing.html_file_zh = metadata.get('translated_file')
                     existing.updated_at = datetime.utcnow()
@@ -512,9 +512,9 @@ def import_articles_from_directory(directory: Path) -> int:
                     article = Article(
                         title=metadata.get('title', 'untitled'),
                         date=article_date,
-                        category=metadata.get('category', 'New Yorker'),
+                        category=metadata.get('category', 'Unknown'),
                         author=metadata.get('author', 'unknown'),
-                        source=metadata.get('source', 'New Yorker'),
+                        source=metadata.get('source', 'Unknown'),
                         original_url=metadata.get('url', ''),
                         html_file_en=metadata.get('original_file', ''),
                         html_file_zh=metadata.get('translated_file')

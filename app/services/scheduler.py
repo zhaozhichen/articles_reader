@@ -203,7 +203,7 @@ async def run_daily_scrape(target_date_str: Optional[str] = None):
 def start_scheduler():
     """Start the scheduler with daily jobs at 7 PM and 11 PM Eastern Time.
     
-    Scheduled scraping jobs (New Yorker and Atlantic) will only run if
+    Scheduled scraping jobs will only run if
     ENABLE_SCHEDULED_SCRAPING is set to 'true' in the environment variables.
     """
     eastern = pytz.timezone('America/New_York')

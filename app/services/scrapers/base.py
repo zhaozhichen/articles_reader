@@ -138,7 +138,7 @@ class BaseScraper(ABC):
         """Get a URL-safe slug identifier for the source.
         
         Returns:
-            Source slug (e.g., "newyorker", "nytimes")
+            Source slug (e.g., "aeon", "nautilus")
         """
         pass
     

@@ -1,6 +1,6 @@
 # Articles Reader
 
-A local web application for reading articles from New Yorker and Atlantic with Chinese translation support. Run it on your local machine (e.g., MacBook) and access it via `http://localhost:8000`.
+A local web application for reading articles from Aeon, Nautilus, and other sources with Chinese translation support. Run it on your local machine (e.g., MacBook) and access it via `http://localhost:8000`.
 
 ## 🚀 Quick Start (TL;DR)
 
@@ -25,7 +25,7 @@ See [Quick Start](#quick-start) section below for detailed instructions.
 
 ## Features
 
-- 📰 Article scraping from New Yorker and Atlantic
+- 📰 Article scraping from Aeon, Nautilus, and other sources
 - 🌐 Chinese/English language toggle with automatic translation
 - 🔍 Filter articles by category, author, date, and source
 - 📱 Responsive card-based layout
@@ -56,8 +56,6 @@ articles_public/
 │       ├── scheduler.py   # Daily scraping scheduler
 │       ├── importer.py    # Article import service
 │       └── scrapers/      # Article scrapers
-│           ├── newyorker.py
-│           ├── atlantic.py
 │           └── ...
 ├── static/                 # Frontend files
 │   └── index.html         # Main web page
@@ -193,22 +191,20 @@ You should see the articles reader interface. If you haven't scraped any article
 To manually scrape articles for a specific date:
 
 ```bash
-# Scrape articles from New Yorker and Atlantic for a specific date
+# Scrape articles from Aeon and Nautilus for a specific date
 python scripts/extract_articles_by_date.py "2025-01-15" --translate --output-dir ./data/html/en --zh-dir ./data/html/zh
 
 # Scrape a single article by URL
-python scripts/extract_articles_by_date.py --url "https://www.newyorker.com/..." --translate --output-dir ./data/html/en --zh-dir ./data/html/zh
+python scripts/extract_articles_by_date.py --url "https://aeon.co/essays/..." --translate --output-dir ./data/html/en --zh-dir ./data/html/zh
 ```
 
 The script will:
-1. Download articles from New Yorker and Atlantic published on the specified date
+1. Download articles from Aeon and Nautilus published on the specified date
 2. Save English versions to `data/html/en/`
 3. Translate to Chinese and save to `data/html/zh/` (if `--translate` is used)
 4. Create metadata JSON files for each article
 
 ### Scheduled Scraping (Optional)
-
-⚠️ **IMPORTANT WARNING**: Before enabling scheduled scraping or manually importing articles, ensure you have valid subscription/membership access to **New Yorker**, **Atlantic**, and **New York Times**. This application scrapes content from these sources, and you must have proper authorization to access and download their articles. Using this tool without proper subscription may violate terms of service.
 
 By default, scheduled scraping is **disabled**. To enable automatic daily scraping:
 
@@ -221,8 +217,8 @@ When enabled, the scheduler will:
 - Clean up old audio files at **2:00 AM Eastern Time**
 
 The scheduler scrapes articles from:
-- **New Yorker**: All articles published on the current date
-- **Atlantic**: All articles published on the current date
+- **Aeon**: All articles published on the current date
+- **Nautilus**: All articles published on the current date
 
 **Note**: Scheduled scraping requires the application to be running continuously. If you only want to scrape articles manually, leave `ENABLE_SCHEDULED_SCRAPING=false`.
 

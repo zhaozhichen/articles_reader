@@ -552,18 +552,6 @@
         }
 
         /* Source-specific background colors */
-        .article-card.newyorker {
-            background: #FFFEF0;
-        }
-
-        .article-card.nytimes {
-            background: #F5F5F5;
-        }
-
-        .article-card.atlantic {
-            background: #E8F4F8;
-        }
-
         .article-card.wechat {
             background: #FFE4E6;
         }
@@ -1118,9 +1106,6 @@
                             <div id="supportedUrlsTooltip" class="supported-urls-tooltip" style="display: none;">
                                 <div class="tooltip-header">支持的URL类型：</div>
                                 <ul class="tooltip-list">
-                                    <li>New Yorker: <code>https://www.newyorker.com/...</code></li>
-                                    <li>New York Times: <code>https://www.nytimes.com/...</code></li>
-                                    <li>The Atlantic: <code>https://www.theatlantic.com/...</code></li>
                                     <li>Aeon: <code>https://aeon.co/essays/...</code></li>
                                     <li>Nautilus: <code>https://nautil.us/...</code></li>
                                     <li>公众号: <code>https://mp.weixin.qq.com/s/...</code></li>
@@ -1724,13 +1709,7 @@
                 let sourceClass = '';
                 if (article.source) {
                     const sourceLower = article.source.toLowerCase();
-                    if (sourceLower.includes('new yorker')) {
-                        sourceClass = 'newyorker';
-                    } else if (sourceLower.includes('new york times') || sourceLower.includes('nytimes')) {
-                        sourceClass = 'nytimes';
-                    } else if (sourceLower.includes('atlantic')) {
-                        sourceClass = 'atlantic';
-                    } else if (sourceLower.includes('公众号') || sourceLower.includes('wechat')) {
+                    if (sourceLower.includes('公众号') || sourceLower.includes('wechat')) {
                         sourceClass = 'wechat';
                     } else if (sourceLower.includes('小宇宙') || sourceLower.includes('xiaoyuzhou')) {
                         sourceClass = 'xiaoyuzhou';

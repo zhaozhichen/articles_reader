@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
 """
-Script to extract article URLs from New Yorker's /latest pages
+Script to extract article URLs from supported sources
 that match a given publish date, or process a single article URL from any supported source.
 
 process all articles by date, and translate them to Simplified Chinese:
 python extract_articles_by_date.py --date "2025-12-17" --translate --output-dir ./articles
 
 translate single article to Simplified Chinese:
-python extract_articles_by_date.py --url "https://www.newyorker.com/culture/postscript/rob-reiner-made-a-new-kind-of-fairy-tale" --translate --output-dir ./articles
-
-process single article from New York Times:
-python extract_articles_by_date.py --url "https://www.nytimes.com/..." --translate --output-dir ./articles
+python extract_articles_by_date.py --url "https://aeon.co/..." --translate --output-dir ./articles
 """
 
 import re
@@ -30,7 +27,7 @@ import requests
 # Add parent directory to path to import app modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app.services.scrapers import get_scraper_for_url, NewYorkerScraper, AtlanticScraper, AeonScraper, NautilusScraper, WeChatScraper
+from app.services.scrapers import get_scraper_for_url, AeonScraper, NautilusScraper, WeChatScraper
 from app.services.translator import translate_html_with_gemini_retry
 from app.services.xiaoyuzhou_processor import download_xiaoyuzhou_audio, transcribe_audio_with_gemini, generate_podcast_summary, load_transcript_from_file
 from app.utils.logger import setup_script_logger
@@ -207,34 +204,31 @@ def save_article_html(url, target_date=None, output_dir='.', translate=False, ge
         return (None, None)
 
 
-def find_articles_by_date(target_date, source='newyorker', max_pages=100, max_workers=10):
+def find_articles_by_date(target_date, source='aeon', max_pages=100, max_workers=10):
     """
     Find all articles published on the target date.
     
-    Supports New Yorker, Atlantic, Aeon, and Nautilus sources.
+    Supports Aeon and Nautilus sources.
     
     Args:
         target_date: datetime.date object for the target date
-        source: Source to search ('newyorker', 'atlantic', 'aeon', or 'nautilus')
-        max_pages: Maximum number of pages to check (only used for New Yorker)
+        source: Source to search ('aeon' or 'nautilus')
+        max_pages: Maximum number of pages to check (not used, kept for compatibility)
         max_workers: Number of concurrent workers for fetching articles
     
     Returns:
         List of article URLs matching the date
     """
-    if source.lower() == 'atlantic':
-        scraper = AtlanticScraper()
-        return scraper.find_articles_by_date(target_date, max_workers=max_workers)
-    elif source.lower() == 'aeon':
+    if source.lower() == 'aeon':
         scraper = AeonScraper()
         return scraper.find_articles_by_date(target_date, max_workers=max_workers)
     elif source.lower() == 'nautilus':
         scraper = NautilusScraper()
         return scraper.find_articles_by_date(target_date, max_workers=max_workers)
     else:
-        # Default to New Yorker
-        scraper = NewYorkerScraper()
-        return scraper.find_articles_by_date(target_date, max_pages=max_pages, max_workers=max_workers)
+        # Default to Aeon
+        scraper = AeonScraper()
+        return scraper.find_articles_by_date(target_date, max_workers=max_workers)
 
 
 def process_single_url(url, output_dir='.', translate=False, gemini_api_key=None, zh_dir=None):
@@ -278,7 +272,7 @@ def process_single_url(url, output_dir='.', translate=False, gemini_api_key=None
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Extract article URLs from New Yorker /latest pages by publish date and save HTML files, or process a single URL'
+        description='Extract article URLs from supported sources by publish date and save HTML files, or process a single URL'
     )
     parser.add_argument(
         'date',
@@ -336,7 +330,7 @@ def main():
         scraper = get_scraper_for_url(args.url)
         if not scraper:
             logger.error(f"Error: No scraper available for URL: {args.url}")
-            logger.error(f"Supported sources: New Yorker, New York Times, Atlantic, Aeon, Nautilus, 公众号, 小宇宙")
+            logger.error(f"Supported sources: Aeon, Nautilus, 公众号, 小宇宙")
             sys.exit(1)
         # For WeChat articles, do not translate (Xiaoyuzhou is handled by scraper's save_article method)
         should_translate = args.translate and scraper.get_source_slug() not in ['wechat']
@@ -363,21 +357,6 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     
     # Find matching articles from all sources
-    logger.info(f"\nSearching for articles from New Yorker...")
-    newyorker_urls = find_articles_by_date(
-        target_date,
-        source='newyorker',
-        max_pages=args.max_pages,
-        max_workers=args.max_workers
-    )
-    
-    logger.info(f"\nSearching for articles from Atlantic...")
-    atlantic_urls = find_articles_by_date(
-        target_date,
-        source='atlantic',
-        max_workers=args.max_workers
-    )
-    
     logger.info(f"\nSearching for articles from Aeon...")
     aeon_urls = find_articles_by_date(
         target_date,
@@ -393,7 +372,7 @@ def main():
     )
     
     # Combine URLs from all sources
-    matching_urls = newyorker_urls + atlantic_urls + aeon_urls + nautilus_urls
+    matching_urls = aeon_urls + nautilus_urls
     
     # Save HTML files for each matching article
     if matching_urls:
