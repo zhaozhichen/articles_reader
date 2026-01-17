@@ -572,6 +572,14 @@
             background: #E8F5E8;
         }
 
+        .article-card.aeon {
+            background: #F3E5F5;
+        }
+
+        .article-card.nautilus {
+            background: #FFF3E0;
+        }
+
         .article-card:hover {
             transform: translateY(-4px);
             box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
@@ -1113,6 +1121,8 @@
                                     <li>New Yorker: <code>https://www.newyorker.com/...</code></li>
                                     <li>New York Times: <code>https://www.nytimes.com/...</code></li>
                                     <li>The Atlantic: <code>https://www.theatlantic.com/...</code></li>
+                                    <li>Aeon: <code>https://aeon.co/essays/...</code></li>
+                                    <li>Nautilus: <code>https://nautil.us/...</code></li>
                                     <li>公众号: <code>https://mp.weixin.qq.com/s/...</code></li>
                                     <li>小宇宙: <code>https://xiaoyuzhou.fm/...</code></li>
                                 </ul>
@@ -1724,6 +1734,10 @@
                         sourceClass = 'wechat';
                     } else if (sourceLower.includes('小宇宙') || sourceLower.includes('xiaoyuzhou')) {
                         sourceClass = 'xiaoyuzhou';
+                    } else if (sourceLower.includes('aeon')) {
+                        sourceClass = 'aeon';
+                    } else if (sourceLower.includes('nautilus')) {
+                        sourceClass = 'nautilus';
                     }
                 }
                 
