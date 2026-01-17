@@ -20,19 +20,17 @@ import os
 import argparse
 import time
 import random
-import hashlib
-import urllib.parse
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 import requests
 
 # Add parent directory to path to import app modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app.services.scrapers import get_scraper_for_url, NewYorkerScraper, AtlanticScraper, WeChatScraper
+from app.services.scrapers import get_scraper_for_url, NewYorkerScraper, AtlanticScraper, AeonScraper, NautilusScraper, WeChatScraper
 from app.services.translator import translate_html_with_gemini_retry
 from app.services.xiaoyuzhou_processor import download_xiaoyuzhou_audio, transcribe_audio_with_gemini, generate_podcast_summary, load_transcript_from_file
 from app.utils.logger import setup_script_logger
@@ -63,122 +61,7 @@ def sanitize_filename(text):
     return text
 
 
-def download_image(img_url: str, output_dir: str, article_url: str) -> Optional[str]:
-    """Download an image and return the local path relative to the HTML file.
-    
-    Args:
-        img_url: Image URL (may be absolute or relative)
-        output_dir: Directory where the HTML file is saved
-        article_url: Original article URL (for resolving relative URLs)
-    
-    Returns:
-        Local path relative to HTML file (e.g., 'images/img_abc123.jpg'), or None if download failed
-    """
-    try:
-        # Resolve relative URLs
-        if not img_url.startswith('http'):
-            img_url = urljoin(article_url, img_url)
-        
-        # Skip data URLs and invalid URLs
-        if img_url.startswith('data:') or not img_url.startswith('http'):
-            return None
-        
-        # Create images subdirectory
-        images_dir = os.path.join(output_dir, 'images')
-        os.makedirs(images_dir, exist_ok=True)
-        
-        # Generate filename from URL hash and extension
-        parsed_url = urlparse(img_url)
-        url_hash = hashlib.md5(img_url.encode()).hexdigest()[:12]
-        ext = os.path.splitext(parsed_url.path)[1] or '.jpg'
-        # Remove query parameters from extension
-        ext = ext.split('?')[0]
-        if not ext or ext == '.':
-            ext = '.jpg'
-        
-        local_filename = f"img_{url_hash}{ext}"
-        local_path = os.path.join(images_dir, local_filename)
-        
-        # Skip if already downloaded
-        if os.path.exists(local_path):
-            logger.debug(f"    Image already exists: {local_filename}")
-            return os.path.join('images', local_filename)
-        
-        # Download image
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Referer': article_url
-        }
-        
-        response = requests.get(img_url, headers=headers, timeout=30, stream=True)
-        response.raise_for_status()
-        
-        # Save image
-        with open(local_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        
-        logger.debug(f"    Downloaded image: {local_filename}")
-        return os.path.join('images', local_filename)
-        
-    except Exception as e:
-        logger.warning(f"    Failed to download image {img_url}: {e}")
-        return None
-
-
-def process_images_in_html(html: str, output_dir: str, article_url: str) -> str:
-    """Download all images in HTML and update image paths to local files.
-    
-    Args:
-        html: HTML content
-        output_dir: Directory where the HTML file is saved
-        article_url: Original article URL
-    
-    Returns:
-        Updated HTML with local image paths
-    """
-    soup = BeautifulSoup(html, 'html.parser')
-    
-    # Find all img tags
-    img_tags = soup.find_all('img')
-    downloaded_count = 0
-    failed_count = 0
-    
-    for img in img_tags:
-        # Get image URL from various attributes
-        img_url = None
-        for attr in ['src', 'data-src', 'data-lazy-src', 'data-original']:
-            if img.get(attr):
-                img_url = img.get(attr)
-                break
-        
-        if not img_url:
-            continue
-        
-        # Skip data URLs and placeholder images
-        if img_url.startswith('data:') or 'placeholder' in img_url.lower():
-            continue
-        
-        # Download image
-        local_path = download_image(img_url, output_dir, article_url)
-        
-        if local_path:
-            # Update src attribute
-            img['src'] = local_path
-            # Remove other src attributes to avoid conflicts
-            for attr in ['data-src', 'data-lazy-src', 'data-original']:
-                if attr in img.attrs:
-                    del img[attr]
-            downloaded_count += 1
-        else:
-            failed_count += 1
-    
-    if downloaded_count > 0:
-        logger.info(f"    Downloaded {downloaded_count} images")
-    if failed_count > 0:
-        logger.warning(f"    Failed to download {failed_count} images")
-    
-    return str(soup)
+# Image processing functions removed - images are no longer downloaded locally
 
 
 # Removed: save_xiaoyuzhou_episode function moved to app/services/scrapers/xiaoyuzhou.py as save_article method
@@ -252,27 +135,22 @@ def save_article_html(url, target_date=None, output_dir='.', translate=False, ge
     filename = f"{date_str}_{source_slug}_{category_safe}_{author_safe}_{title_safe}.html"
     filepath = os.path.join(output_dir, filename)
     
-    # Process images: download and update paths
-    logger.info(f"    Processing images...")
-    processed_html = process_images_in_html(result.html, output_dir, url)
-    
-    # Save the original HTML with processed images
+    # Save the original HTML
     translated_filepath = None
     try:
         with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(processed_html)
+            f.write(result.html)
         
         # Translate if requested (with retry mechanism)
         if translate:
             logger.info(f"    Translating to Simplified Chinese...")
             # Translate with retry mechanism
             # Note: translate_html_with_gemini will extract body internally
-            # Use processed_html (with local images) for translation
             try:
                 logger.info(f"    [DEBUG] About to call translate_html_with_gemini_retry for {filename}")
-                logger.info(f"    [DEBUG] HTML content length: {len(processed_html)} chars")
+                logger.info(f"    [DEBUG] HTML content length: {len(result.html)} chars")
                 translated_html = translate_html_with_gemini_retry(
-                    processed_html, 
+                    result.html, 
                     gemini_api_key, 
                     max_retries=2,
                     filename=filename
@@ -333,11 +211,11 @@ def find_articles_by_date(target_date, source='newyorker', max_pages=100, max_wo
     """
     Find all articles published on the target date.
     
-    Supports New Yorker and Atlantic sources.
+    Supports New Yorker, Atlantic, Aeon, and Nautilus sources.
     
     Args:
         target_date: datetime.date object for the target date
-        source: Source to search ('newyorker' or 'atlantic')
+        source: Source to search ('newyorker', 'atlantic', 'aeon', or 'nautilus')
         max_pages: Maximum number of pages to check (only used for New Yorker)
         max_workers: Number of concurrent workers for fetching articles
     
@@ -346,6 +224,12 @@ def find_articles_by_date(target_date, source='newyorker', max_pages=100, max_wo
     """
     if source.lower() == 'atlantic':
         scraper = AtlanticScraper()
+        return scraper.find_articles_by_date(target_date, max_workers=max_workers)
+    elif source.lower() == 'aeon':
+        scraper = AeonScraper()
+        return scraper.find_articles_by_date(target_date, max_workers=max_workers)
+    elif source.lower() == 'nautilus':
+        scraper = NautilusScraper()
         return scraper.find_articles_by_date(target_date, max_workers=max_workers)
     else:
         # Default to New Yorker
@@ -452,7 +336,7 @@ def main():
         scraper = get_scraper_for_url(args.url)
         if not scraper:
             logger.error(f"Error: No scraper available for URL: {args.url}")
-            logger.error(f"Supported sources: New Yorker, New York Times, Atlantic, 公众号, 小宇宙")
+            logger.error(f"Supported sources: New Yorker, New York Times, Atlantic, Aeon, Nautilus, 公众号, 小宇宙")
             sys.exit(1)
         # For WeChat articles, do not translate (Xiaoyuzhou is handled by scraper's save_article method)
         should_translate = args.translate and scraper.get_source_slug() not in ['wechat']
@@ -478,7 +362,7 @@ def main():
     # Create output directory if it doesn't exist
     os.makedirs(args.output_dir, exist_ok=True)
     
-    # Find matching articles from both sources
+    # Find matching articles from all sources
     logger.info(f"\nSearching for articles from New Yorker...")
     newyorker_urls = find_articles_by_date(
         target_date,
@@ -494,8 +378,22 @@ def main():
         max_workers=args.max_workers
     )
     
-    # Combine URLs from both sources
-    matching_urls = newyorker_urls + atlantic_urls
+    logger.info(f"\nSearching for articles from Aeon...")
+    aeon_urls = find_articles_by_date(
+        target_date,
+        source='aeon',
+        max_workers=args.max_workers
+    )
+    
+    logger.info(f"\nSearching for articles from Nautilus...")
+    nautilus_urls = find_articles_by_date(
+        target_date,
+        source='nautilus',
+        max_workers=args.max_workers
+    )
+    
+    # Combine URLs from all sources
+    matching_urls = newyorker_urls + atlantic_urls + aeon_urls + nautilus_urls
     
     # Save HTML files for each matching article
     if matching_urls:

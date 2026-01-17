@@ -47,7 +47,8 @@ async def _process_article_import_task(
     timeout_seconds: int,
     env: Dict[str, Any],
     db: Session,
-    task_id: str
+    task_id: str,
+    is_update: bool = False
 ) -> Dict[str, Any]:
     """Process a single article import task."""
     try:
@@ -106,29 +107,58 @@ async def _process_article_import_task(
         import_count = await asyncio.to_thread(import_articles_from_directory, HTML_DIR_EN)
         logger.info(f"Imported {import_count} articles into database")
         
-        # Get the newly imported article
+        # Get the newly imported/updated article
+        # First try exact URL match
         new_article = db.query(Article).filter(Article.original_url == url).first()
+        
+        # If not found, try normalized URL match
         if not new_article:
-            # Try to find by checking recent imports
-            new_article = db.query(Article).order_by(Article.created_at.desc()).first()
+            from urllib.parse import urlparse, urlunparse
+            def normalize_url_internal(url_str):
+                if not url_str:
+                    return None
+                parsed = urlparse(url_str)
+                normalized = urlunparse((
+                    parsed.scheme,
+                    parsed.netloc,
+                    parsed.path,
+                    '', '', ''
+                ))
+                if normalized.endswith('/'):
+                    normalized = normalized[:-1]
+                return normalized
+            
+            normalized_url = normalize_url_internal(url)
+            if normalized_url:
+                all_articles = db.query(Article).filter(Article.original_url != '').all()
+                for article in all_articles:
+                    if normalize_url_internal(article.original_url) == normalized_url:
+                        new_article = article
+                        break
+        
+        # If still not found, try to find by checking recent imports/updates
+        if not new_article:
+            new_article = db.query(Article).order_by(Article.updated_at.desc()).first()
         
         if new_article:
-            # Mark manually uploaded articles as starred by default
-            try:
-                if not new_article.starred:
-                    new_article.starred = True
-                    db.commit()
-                    logger.info(f"Marked manually uploaded article as starred: {new_article.id}")
-            except Exception as e:
-                logger.warning(f"Failed to mark article as starred: {e}", exc_info=True)
+            # Mark manually uploaded articles as starred by default (only for new articles)
+            if not is_update:
                 try:
-                    db.rollback()
-                except:
-                    pass
+                    if not new_article.starred:
+                        new_article.starred = True
+                        db.commit()
+                        logger.info(f"Marked manually uploaded article as starred: {new_article.id}")
+                except Exception as e:
+                    logger.warning(f"Failed to mark article as starred: {e}", exc_info=True)
+                    try:
+                        db.rollback()
+                    except:
+                        pass
             
+            action = "updated" if is_update else "added"
             result = {
                 "success": True,
-                "message": "Article added successfully",
+                "message": f"Article {action} successfully",
                 "article": ArticleResponse.model_validate(new_article)
             }
             if task_id in _import_tasks:
@@ -177,13 +207,18 @@ async def _import_worker():
                 logger.info("Import worker received shutdown signal")
                 break
             
-            url, scraper, script_path, timeout_seconds, env, db, future, task_id = task
+            # Handle both old format (without is_update) and new format (with is_update)
+            if len(task) == 9:
+                url, scraper, script_path, timeout_seconds, env, db, future, task_id, is_update = task
+            else:
+                url, scraper, script_path, timeout_seconds, env, db, future, task_id = task
+                is_update = False
             
             logger.info(f"Processing queued import task for URL: {url} (queue size: {_import_queue.qsize()})")
             
             try:
                 result = await _process_article_import_task(
-                    url, scraper, script_path, timeout_seconds, env, db, task_id
+                    url, scraper, script_path, timeout_seconds, env, db, task_id, is_update
                 )
                 if future:
                     future.set_result(result)
@@ -533,35 +568,7 @@ async def get_article_html(
         with open(file_path, 'r', encoding='utf-8') as f:
             html_content = f.read()
         
-        # Replace relative image paths with API URLs
-        # Images are stored as relative paths like "images/img_xxx.jpg"
-        # We need to convert them to API URLs like "/api/articles/{article_id}/images/images/img_xxx.jpg"
-        import re
-        def replace_image_path(match):
-            img_path = match.group(1)
-            # Skip if already an absolute URL (http/https)
-            if img_path.startswith('http://') or img_path.startswith('https://'):
-                return match.group(0)
-            # Convert relative path to API URL
-            api_url = f"/api/articles/{article_id}/images/{img_path}"
-            return f'src="{api_url}"'
-        
-        # Replace src="images/..." with API URLs
-        html_content = re.sub(r'src="([^"]*images/[^"]+)"', replace_image_path, html_content)
-        # Also handle srcset attributes
-        def replace_srcset(match):
-            srcset_content = match.group(1)
-            # Replace each URL in srcset
-            def replace_srcset_url(url_match):
-                url = url_match.group(1)
-                if url.startswith('http://') or url.startswith('https://'):
-                    return url_match.group(0)
-                api_url = f"/api/articles/{article_id}/images/{url}"
-                return url_match.group(0).replace(url, api_url)
-            srcset_content = re.sub(r'([^\s,]+)', replace_srcset_url, srcset_content)
-            return f'srcset="{srcset_content}"'
-        html_content = re.sub(r'srcset="([^"]+)"', replace_srcset, html_content)
-        
+        # Images are no longer downloaded locally - HTML contains original image URLs
         return Response(
             content=html_content,
             media_type="text/html"
@@ -900,18 +907,48 @@ async def add_article_from_url(
         if not scraper:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"URL not supported. Supported sources: New Yorker, New York Times, Atlantic, 公众号, 小宇宙"
+                detail=f"URL not supported. Supported sources: New Yorker, New York Times, Atlantic, Aeon, Nautilus, 公众号, 小宇宙"
             )
         
-        # Check if article already exists
+        # Check if article already exists (with normalized URL matching)
+        from urllib.parse import urlparse, urlunparse
+        def normalize_url(url_str):
+            """Normalize URL by removing query parameters and fragments."""
+            if not url_str:
+                return None
+            parsed = urlparse(url_str)
+            normalized = urlunparse((
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path,
+                '',  # params
+                '',  # query
+                ''   # fragment
+            ))
+            # Remove trailing slash
+            if normalized.endswith('/'):
+                normalized = normalized[:-1]
+            return normalized
+        
+        # Check exact match first
         existing = db.query(Article).filter(Article.original_url == url).first()
-        if existing:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Article with this URL already exists"
-            )
         
-        logger.info(f"Queuing article import from URL: {url} (source: {scraper.get_source_name()})")
+        # If not found, check normalized URL
+        if not existing:
+            normalized_url = normalize_url(url)
+            if normalized_url:
+                all_articles = db.query(Article).filter(Article.original_url != '').all()
+                for article in all_articles:
+                    if normalize_url(article.original_url) == normalized_url:
+                        existing = article
+                        break
+        
+        # If article exists, we'll update it instead of throwing an error
+        is_update = existing is not None
+        if is_update:
+            logger.info(f"Article already exists (ID: {existing.id}), will update: {url} (source: {scraper.get_source_name()})")
+        else:
+            logger.info(f"Queuing article import from URL: {url} (source: {scraper.get_source_name()})")
         
         # Path to the scraping script
         script_path = BASE_DIR / "scripts" / "extract_articles_by_date.py"
@@ -953,7 +990,7 @@ async def add_article_from_url(
             logger.info(f"Article import queued (position in queue: {queue_size + 1})")
             _import_tasks[task_id]["message"] = f"任务已加入队列（队列位置: {queue_size + 1}）"
         
-        await _import_queue.put((url, scraper, script_path, timeout_seconds, env, db, future, task_id))
+        await _import_queue.put((url, scraper, script_path, timeout_seconds, env, db, future, task_id, is_update))
         
         # Return immediately with task ID
         return {

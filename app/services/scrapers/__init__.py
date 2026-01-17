@@ -4,6 +4,8 @@ from app.services.scrapers.base import BaseScraper
 from app.services.scrapers.newyorker import NewYorkerScraper
 from app.services.scrapers.nytimes import NewYorkTimesScraper
 from app.services.scrapers.atlantic import AtlanticScraper
+from app.services.scrapers.aeon import AeonScraper
+from app.services.scrapers.nautilus import NautilusScraper
 from app.services.scrapers.wechat import WeChatScraper
 from app.services.scrapers.xiaoyuzhou import XiaoyuzhouScraper
 
@@ -12,6 +14,8 @@ SCRAPERS: list[BaseScraper] = [
     NewYorkerScraper(),
     NewYorkTimesScraper(),
     AtlanticScraper(),
+    AeonScraper(),
+    NautilusScraper(),
     WeChatScraper(),
     XiaoyuzhouScraper(),
 ]
@@ -21,6 +25,8 @@ __all__ = [
     'NewYorkerScraper',
     'NewYorkTimesScraper',
     'AtlanticScraper',
+    'AeonScraper',
+    'NautilusScraper',
     'WeChatScraper',
     'XiaoyuzhouScraper',
     'get_scraper_for_url',
