@@ -25,8 +25,7 @@ def is_url(text: str) -> bool:
             'facebook.com' in text.lower() or
             'twitter.com' in text.lower() or
             'linkedin.com' in text.lower() or
-            'instagram.com' in text.lower() or
-)
+            'instagram.com' in text.lower())
 
 def clean_author_from_meta(author: str) -> str:
     """Clean and extract author name from meta tag content (which might be a URL).
