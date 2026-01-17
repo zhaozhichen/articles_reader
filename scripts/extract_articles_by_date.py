@@ -122,6 +122,9 @@ def save_article_html(url, target_date=None, output_dir='.', translate=False, ge
         except NotImplementedError:
             # Scraper has save_article but it's not implemented, fall through to default
             pass
+        except Exception as e:
+            logger.error(f"Error in custom save_article method: {e}", exc_info=True)
+            raise
     
     # Sanitize components
     category_safe = sanitize_filename(category)

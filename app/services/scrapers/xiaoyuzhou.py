@@ -14,6 +14,21 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+def _ensure_logger_handlers():
+    """Ensure logger has handlers - try to use extract_articles logger's handlers."""
+    if logger.handlers:
+        return
+    # Try to get handlers from extract_articles logger (used by scripts)
+    extract_logger = logging.getLogger("extract_articles")
+    if extract_logger.handlers:
+        for handler in extract_logger.handlers:
+            logger.addHandler(handler)
+        logger.propagate = False
+    else:
+        # Fallback: allow propagation to root logger
+        logger.propagate = True
+    logger.setLevel(logging.INFO)
+
 
 def sanitize_filename(text):
     """Sanitize text for use in filenames."""
@@ -285,6 +300,9 @@ class XiaoyuzhouScraper(BaseScraper):
         Returns:
             Tuple of (original_filepath, translated_filepath) where translated_filepath is None
         """
+        # Ensure logger has handlers before logging
+        _ensure_logger_handlers()
+        
         logger.info("=" * 80)
         logger.info("Processing Xiaoyuzhou episode...")
         logger.info(f"URL: {url}")
@@ -314,10 +332,19 @@ class XiaoyuzhouScraper(BaseScraper):
         if episode_id:
             transcript_file = AUDIO_DIR / f"episode_{episode_id}.txt"
             if transcript_file.exists():
-                logger.info(f"Transcript file already exists: {transcript_file}, loading from file")
-                transcript = load_transcript_from_file(transcript_file)
-                if transcript:
-                    logger.info(f"Loaded transcript from file: {len(transcript)} characters")
+                logger.info(f"Transcript file exists: {transcript_file}, loading from file")
+                loaded_transcript = load_transcript_from_file(transcript_file)
+                # Only use transcript if it has meaningful content (not empty or whitespace only)
+                if loaded_transcript and loaded_transcript.strip():
+                    transcript = loaded_transcript
+                    logger.info(f"Using existing transcript: {len(transcript)} characters")
+                else:
+                    logger.warning(f"Transcript file is empty or invalid, will re-download and transcribe")
+                    transcript = None
+            else:
+                logger.info(f"Transcript file does not exist, will download and transcribe")
+        else:
+            logger.warning(f"Could not extract episode_id from URL, will attempt to download")
         
         # Download audio and transcribe if transcript doesn't exist
         audio_file = None
@@ -332,6 +359,9 @@ class XiaoyuzhouScraper(BaseScraper):
             # Use episode_id from download if we didn't have it before
             if not episode_id and downloaded_episode_id:
                 episode_id = downloaded_episode_id
+                transcript_file = AUDIO_DIR / f"episode_{episode_id}.txt"
+            elif not transcript_file and episode_id:
+                # Ensure transcript_file is set if we have episode_id
                 transcript_file = AUDIO_DIR / f"episode_{episode_id}.txt"
             
             if audio_file:
@@ -352,6 +382,7 @@ class XiaoyuzhouScraper(BaseScraper):
                     transcript = "（转录失败）"
             else:
                 logger.error("Audio download failed")
+                logger.error(f"download_xiaoyuzhou_audio returned None for URL: {url}")
                 transcript = "（音频下载失败，无法转录）"
         else:
             logger.info("Skipping audio download and transcription (transcript file exists)")

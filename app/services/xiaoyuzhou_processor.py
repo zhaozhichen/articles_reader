@@ -16,6 +16,21 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+def _ensure_logger_handlers():
+    """Ensure logger has handlers - try to use extract_articles logger's handlers."""
+    if logger.handlers:
+        return
+    # Try to get handlers from extract_articles logger (used by scripts)
+    extract_logger = logging.getLogger("extract_articles")
+    if extract_logger.handlers:
+        for handler in extract_logger.handlers:
+            logger.addHandler(handler)
+        logger.propagate = False
+    else:
+        # Fallback: allow propagation to root logger
+        logger.propagate = True
+    logger.setLevel(logging.INFO)
+
 
 def download_xiaoyuzhou_audio(episode_url: str, output_dir: Path) -> tuple[Optional[Path], Optional[str]]:
     """Download MP3 audio file from Xiaoyuzhou episode page.
@@ -28,6 +43,9 @@ def download_xiaoyuzhou_audio(episode_url: str, output_dir: Path) -> tuple[Optio
         Tuple of (Path to downloaded audio file, episode_id), or (None, None) if download failed.
         If audio file already exists, returns (existing_path, episode_id) without downloading.
     """
+    # Ensure logger has handlers before logging
+    _ensure_logger_handlers()
+    
     try:
         logger.info(f"Fetching episode page: {episode_url}")
         logger.info("This may take a moment...")
@@ -149,7 +167,10 @@ def download_xiaoyuzhou_audio(episode_url: str, output_dir: Path) -> tuple[Optio
         
         logger.info(f"Downloading audio to: {audio_path}")
         logger.info("This may take several minutes for large audio files...")
-        logger.info("Progress: [", end="", flush=True)
+        # Use print for progress indicator since logger.info doesn't support end/flush
+        import sys
+        print("Progress: [", end="", flush=True, file=sys.stderr)
+        logger.info("Progress: [")
         start_time = time.time()
         audio_response = requests.get(audio_url, headers=headers, timeout=300, stream=True)
         audio_response.raise_for_status()
@@ -164,8 +185,9 @@ def download_xiaoyuzhou_audio(episode_url: str, output_dir: Path) -> tuple[Optio
                     chunk_count += 1
                     # Print progress every 100 chunks (~800KB)
                     if chunk_count % 100 == 0:
-                        logger.info(".", end="", flush=True)
+                        print(".", end="", flush=True, file=sys.stderr)
         
+        print("]", file=sys.stderr)  # End progress line
         logger.info("]")  # End progress line
         elapsed_time = time.time() - start_time
         file_size_mb = audio_path.stat().st_size / (1024 * 1024)
@@ -320,12 +342,17 @@ def load_transcript_from_file(transcript_file: Path) -> Optional[str]:
         transcript_file: Path to transcript txt file
         
     Returns:
-        Transcript text, or None if file doesn't exist or read failed
+        Transcript text, or None if file doesn't exist, is empty, or read failed.
+        Returns None for empty files to force re-download and transcription.
     """
     try:
         if transcript_file.exists():
             with open(transcript_file, 'r', encoding='utf-8') as f:
                 transcript = f.read()
+            # Return None if file is empty or only whitespace
+            if not transcript or not transcript.strip():
+                logger.warning(f"Transcript file exists but is empty: {transcript_file}")
+                return None
             logger.info(f"Loaded transcript from file: {transcript_file} ({len(transcript)} characters)")
             return transcript
         else:
